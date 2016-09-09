@@ -1,0 +1,14 @@
+#!/bin/bash
+grepstring=$1
+grep_command=""
+
+for i in `ls /etc/yum.repos.d`
+do 
+  if [ -n ${grepstring} ];then
+    echo "${i}" | grep -qi "${grepstring}" || continue
+  fi
+  echo
+  echo "########## $i ##########"
+  echo 
+  cat /etc/yum.repos.d/$i 
+done
