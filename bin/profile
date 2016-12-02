@@ -1,0 +1,174 @@
+#!/bin/bash --
+. ~/.bashrc
+alias ls='ls --color'
+alias vim74='/Applications/MacVim.app/Contents/MacOS/Vim'
+alias iterm='/Applications/iTerm.app/Contents/MacOS/iTerm'
+alias finder='~/bin/finder.sh'
+alias eclipse="/home/wwallace/EclipseMarsForOmniStack/eclipse &"
+export EDITOR="vim"
+export GIT_EDITOR="vim"
+export JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64"
+export MVN_BIN="/Users/willwallace/apache-maven-3.3.9/bin"
+export SANDBOX="${HOME}/sandbox"
+export PUPPET1="${SANDBOX}/puppet1"
+export PUPPET2="${SANDBOX}/puppet2"
+export PUPPET3="${SANDBOX}/puppet3"
+export PUPPET4="${SANDBOX}/puppet4"
+export RUBYGEMS_HOST=http://artifact.simplivt.local:8081/artifactory/api/gems/gems-foxhound-local
+export SSH_USER="wwallace"
+#export GIT_SSL_NO_VERIFY=1
+
+
+alias ovftool='/Applications/VMware\ Fusion.app/Contents/Library/VMware\ OVF\ Tool/ovftool'
+alias flushdns='sudo killall -HUP mDNSResponder; sleep 1; dscacheutil -flushcache'
+alias cow='fortune | cowsay'
+alias grep='grep --color'
+
+
+if [ -f ~/.git_alias ];then
+  source ~/.git_alias
+fi
+
+source ${HOME}/bin/functions.sh
+
+xssh() {
+  for host in $@
+  do
+  	echo "Connecting to ${host}"
+    case ${host} in
+      foreman-prod*)
+        fg="yellow" 
+        bg="rgb:80/00/00"
+        ;;
+      smartproxy-frco*)
+        fg="white" 
+        bg="rgb:af/00/00"
+        ;;
+      smartproxy-wb*)
+        fg="white" 
+        bg="rgb:80/00/00"
+        ;;
+      vyos)
+        fg="black" 
+        bg="gray"
+        ;;
+      *prod_alt)
+        fg="white"
+        bg="rgb:00/5f/87"
+        ;;
+      *)
+        fg="white"
+        bg="black"
+        ;;
+    esac
+    xterm -fg ${fg} -bg ${bg} -e ssh ${host} &
+  done
+}
+
+vssh() {
+  for host in $@
+  do
+  	echo "Connecting to ${host}"
+    case ${host} in
+      ubuntu)
+        xterm -fg white -bg rgb:5f/00/5f -e vagrant ssh ${host} &
+      ;;
+
+      centos)
+        xterm -fg black -bg rgb:ff/df/af -e vagrant ssh ${host} &
+      ;;
+
+      puppet_master*)
+        xterm -fg white -bg rgb:5f/00/d7 -e vagrant ssh ${host} &
+      ;;
+
+      *)
+        xterm -fg yellow -bg rgb:00/00/5f -e vagrant ssh ${host} &
+      ;;
+    esac
+  done
+}
+
+xvim() {
+  for i in $@
+  do
+    xterm -rv -e vim $i &
+  done
+}
+
+xless() {
+  for i in $@
+  do
+    xterm -rv -e less $i &
+  done
+}
+
+fif() {
+  options="-l"
+  if [ "X${show_in_file}" = "Xtrue" ];then
+    options=""
+  fi
+  if [ -z $1 ];then
+    red "Please provide a directory to start in"
+    echo "usage fif <dir> <string>"
+    return
+  fi
+  if [ -z $2 ];then
+    red "Please provide a string to look for"
+    echo "usage fif <dir> <string>"
+    return
+  fi
+  find -L $1 -type f -exec grep ${options} "$2" {} \;
+  show_in_file="false"
+}
+
+sif() {
+  show_in_file=true
+fif ${@} 
+}
+
+echo $PATH | grep -q ${MVN_BIN} || export PATH=${MVN_BIN}:${PATH}
+echo $PATH | grep -q ${JAVA_HOME}/bin || export PATH=${JAVA_HOME}/bin:${PATH}
+echo $PATH | grep -q ${HOME}/bin || export PATH=${HOME}/bin:${PATH}
+
+#RVM a ruby version manager
+if [ -z ${RVMBIN} ];then
+  export RVMBIN=${HOME}/.rvm/bin
+  export PATH="$PATH:${RVMBIN}" # Add RVM to PATH for scripting
+fi
+[[ -s "$HOME/.rvm/scripts/rvm" ]] && source "$HOME/.rvm/scripts/rvm" # Load RVM into a shell session *as a function*
+
+spec() {
+  if [ $#  -ne 1 ];then
+    red 'Please provide a directory argument'
+    return
+  fi
+  if [ ! -d $1 ];then
+    red "$1 is not a directory"
+    return
+  fi
+  pushd $1; 
+  set -x
+  bundle install --path vendor/gems
+  bundle exec rake spec_prep
+  set +x
+  cyan 'bundle exec rspec <path/to/spec_file.rb>'
+  popd
+}
+
+envs() {
+  #OLDPWD=`pwd`
+  pushd . > /dev/null
+  for i in `find $SANDBOX -maxdepth 3 -type d -name .git`
+  do
+    path=`echo ${i} | sed 's/\/\.git//'`
+    if [ -d ${path}/.git ];then
+      echo -n "$path: "
+      cd ${path} && git br | grep \*
+    fi
+  done
+  popd > /dev/null
+  #cd $OLDPWD
+}
+
+cow
