@@ -1,7 +1,10 @@
 . ~/bin/functions.sh
 PROG=$0
 
-
+fatal() {
+  red $@
+  exit 1
+}
 usage() {
 if [ $# -gt 0 ];then
   red $@
@@ -9,27 +12,40 @@ fi
 cat << FIN
 Usage:
 
-$PROG <module_dir> <gradle_command>
+$PROG <module1> [<module2>] . . . 
+$PROG clean <module1> [<module2>] . . . 
 
 FIN
   exit 1
 }
-if [ $# -ne 2 ];then
-  usage "Please provide valid arguments"
+
+clean() {
+  if [ -d $HOME/.gradle/caches ];then
+    yellow "Removing gradle caches $HOME/.gradle/caches"
+    rm -rf $HOME/.gradle/caches/*
+  fi
+}
+
+if [ $# -eq 0 ];then
+  usage "Please provide at least one module name"
 fi
-if [ ! -d $modules ];then
-  usage "Please provide a valid directory for modules"
+
+
+if [ "X${1}" = "Xclean" ]; then
+  clean  
+  shift  
 fi
 
+. $SANDBOX/svt-dev-tools/bin/svtsetup
 
-modules=$1
-gradle_command=$2
-green "using modules $modules"
 
-for wrapper in `find . -name gradlew`
+green "preparing modules $@"
+
+for module in $@
 do
-  module=`echo $wrapper | sed 's/\/gradlew$//'`
-  pushd $module
-  ./gradlew ${gradle_command}
-  popd
+  yellow "==${module}=="
+  gcd $module || fatal "Bad module name ${module}!"
+  ./gradlew clean || fatal "gradlew clean failed"
+  ./gradlew -x test build || fatal "gradlew -x test build failed"
+  ./gradlew -x test publish || fatal "gradlew -x test publish failed"
 done
