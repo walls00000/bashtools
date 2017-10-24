@@ -32,6 +32,11 @@ black() {
   echo "[030m$@[0m"
 }
 
+##########################
+## xterm colors
+##########################
+export AMBER="rgb:ff/af/00"
+export DARK_GRAY="rgb:1c/1c/1c"
 
 xssh() {
   MY_TERM=xterm
@@ -44,14 +49,16 @@ tssh() {
 }
 
 term_ssh() {
+  geometry="80x24"
   for host in $@
   do
     echo "Connecting to ${host}"
     case ${host} in
       dvm*)
-        fg="white"
-        bg="rgb:5f/00/5f"
-        profile="PinkFg"
+        fg="$AMBER"
+        bg="$DARK_GRAY"
+        #profile="PinkFg"
+        profile="Pro"
         ;;
       foreman-prod*)
         fg="yellow" 
@@ -73,6 +80,12 @@ term_ssh() {
         fg="white"
         bg="rgb:00/5f/87"
         ;;
+      svtlab)
+        geometry="110x58"
+        fg="white"
+        bg="NavyBlue"
+        profile="BlueFg"
+        ;;
       *)
         fg="white"
         bg="black"
@@ -80,7 +93,7 @@ term_ssh() {
         ;;
     esac
     if [ "X${MY_TERM}" == "Xxterm" ];then
-      xterm -fg ${fg} -bg ${bg} -e ssh ${host} &
+      xterm -fg ${fg} -bg ${bg} -geometry ${geometry} -e ssh ${host} &
     elif [ "X${MY_TERM}" == "Xterm" ];then
       macterm.sh "ssh ${host}" $profile 
     fi

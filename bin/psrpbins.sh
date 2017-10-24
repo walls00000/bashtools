@@ -21,8 +21,20 @@ LOGIN_DIR="${LOGIN_DIR:-/home/svtcli}"
 BACKUP_DIR="${BACKUP_DIR:-${LOGIN_DIR}/orig}"
 STAGING_DIR="${STAGING_DIR:-${LOGIN_DIR}/new}"
 
+red() {
+  echo "[031m$@[0m"
+}
+
+green() {
+  echo "[032m$@[0m"
+}
+
+yellow() {
+  echo "[033m$@[0m"
+}
+
+
 createDirectories() {
-  set -x
   for dir in ${BACKUP_DIR} ${STAGING_DIR}
   do
     if [ ! -d $dir ];then
@@ -30,7 +42,6 @@ createDirectories() {
       chmod 777 $dir
     fi
   done
-  set +x
 }
 
 hostname_prefix=`echo "$HOSTNAME" | cut -c -5`
@@ -42,14 +53,14 @@ if [ "X${hostname_prefix}" == "XOC-ip" ];then
 else
   #dvm
   if [ "X${MODULES}" == "X" ];then
-    echo "WARNING: MODULES is not set!  Please set MODULES to the directory containing remote-powershell module!"
+    red "WARNING: MODULES is not set!  Please set MODULES to the directory containing remote-powershell module!"
   fi
   if [ -d $MODULES/remote-powershell ];then
     DIR="$MODULES/remote-powershell"
-  elif [ -d $MODULES/svt-remote-powershell ];then
-    DIR="$MODULES/svt-remote-powershell"
+  elif [ -d $MODULES/svt-remote-powershell-hvac ];then
+    DIR="$MODULES/svt-remote-powershell-hvac"
   else
-    echo "ERROR: Cannot find remote-powershell or svt-remote-powershell directory in $MODULES"
+    red "ERROR: Cannot find remote-powershell or svt-remote-powershell directory in $MODULES"
   fi
   JAR_DIR=$DIR
 fi
@@ -57,6 +68,7 @@ fi
 cat << FIN
 ############################################################################
 ## SVAS:        $SVAS
+## MODULES:     $MODULES
 ## DIR:         $DIR
 ## BINS:        $BINS
 ## BACKUP_DIR:  $BACKUP_DIR
@@ -122,7 +134,7 @@ backup() {
   do
     src=`find $DIR -type f -name ${bin}`
     if [ -f ${BACKUP_DIR}/${bin} ];then
-      echo "REFUSING TO OVERWRITE ORIGINAL BACKUP in ${BACKUP_DIR}/${bin}"
+      red "REFUSING TO OVERWRITE ORIGINAL BACKUP in ${BACKUP_DIR}/${bin}"
     else 
       cp $src ${BACKUP_DIR}
     fi
