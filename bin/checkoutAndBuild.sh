@@ -1,10 +1,11 @@
 source ~/bin/functions.sh
+BRANCH=${BRANCH:-master}
 BUILD_ARGS="${@:-}"
 FAILED=""
-repos="\
+oldrepos="\
 #ssh://git@stash.simplivt.local:7999/~slarson/svt-hval-hyperproxy-hvac.git \
 #ssh://git@stash.simplivt.local:7999/~wwallace/svt-hyperproxy-impl-hvac.git \
-#ssh://git@stash.simplivt.local:7999/~mtardif/area51.svt-security.git \
+#ssh://e#it@stash.simplivt.local:7999/~mtardif/area51.svt-security.git \
 #ssh://git@stash.simplivt.local:7999/~rlaporte/svt-eventmgr-hvac.git \
 ssh://git@stash.simplivt.local:7999/~wwallace/svt-remote-powershell-hvac.git \
 #ssh://git@stash.simplivt.local:7999/~rlaporte/svt-rest-api-hvac.git \
@@ -16,6 +17,21 @@ ssh://git@stash.simplivt.local:7999/~wwallace/svt-remote-powershell-hvac.git \
 #ssh://git@stash.simplivt.local:7999/~ckallianpur/svt-base-ubuntu-hvac.git \
 #ssh://git@stash.simplivt.local:7999/~slarson/svt-control-plane-hvac.git \
 #ssh://git@stash.simplivt.local:7999/~kglidewell/svt-assembly-hvac.git \
+"
+
+repos="\
+ssh://git@stash.simplivt.local:7999/~wwallace/svt-hval-hyperproxy.git \
+ssh://git@stash.simplivt.local:7999/~wwallace/svt-hyperproxy-impl.git \
+ssh://git@stash.simplivt.local:7999/~wwallace/svt-security-common.git \
+ssh://git@stash.simplivt.local:7999/~wwallace/svt-eventmgr.git \
+#ssh://git@stash.simplivt.local:7999/~wwallace/svt-remote-powershell.git \
+ssh://git@stash.simplivt.local:7999/~wwallace/svt-rest-api.git \
+#ssh://git@stash.simplivt.local:7999/~wwallace/svt-platform-scripts.git \
+#ssh://git@stash.simplivt.local:7999/~wwallace/svt-cli.git \
+#ssh://git@stash.simplivt.local:7999/~wwallace/svt-deploy-installer.git \
+ssh://git@stash.simplivt.local:7999/~wwallace/svt-deploy.git \
+#ssh://git@stash.simplivt.local:7999/~wwallace/svt-deploy-api.git
+#ssh://git@stash.simplivt.local:7999/~wwallace/svt-assembly.git \
 "
 for i in $repos
 do
@@ -29,18 +45,19 @@ do
   if [ ! -d $dir ];then
     git clone $i
     cd $dir
-    if [ "X${dir}" == "Xarea51.svt-security" ];then
+    #TODO MAKE BRANCH CO MORE FLEXIBLE
+    if [ "X${dir}" == "Xsvt-hval-hyperproxy" ];then
       yellow $dir
-      git checkout release/PSI10
+      git checkout $BRANCH
     else 
-      git checkout release/PSI11
+      git checkout master
     fi
   else
     cd $dir
-    git pull --ff-only 
+    git pull --ff-only
   fi
   for j in `cat moduleversion.yaml | grep -v "^\#"`; do echo -n "$j "; done;echo
-  if [ "X${dir}" == "Xsvt-assembly-hvac" ];then
+  if [ "X${dir}" == "Xsvt-assembly" ];then
     yellow "Skipping $dir"
     continue
   fi

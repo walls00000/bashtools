@@ -10,19 +10,18 @@ export GIT_EDITOR="vim"
 export JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64"
 export MVN_BIN="/Users/willwallace/apache-maven-3.3.9/bin"
 export SANDBOX="${HOME}/sandbox"
-export PUPPET1="${SANDBOX}/puppet1"
-export PUPPET2="${SANDBOX}/puppet2"
-export PUPPET3="${SANDBOX}/puppet3"
-export PUPPET4="${SANDBOX}/puppet4"
-export RUBYGEMS_HOST=http://artifact.simplivt.local:8081/artifactory/api/gems/gems-foxhound-local
 export SSH_USER="wwallace"
+export BUGS=/media/wwallace/shared/BUGS
+export SVA_TOOLS=${HOME}/SVA/tools
+export ROBOT_ROOT="/home/wwallace/sandbox/robot"
 #export GIT_SSL_NO_VERIFY=1
 
-
+alias ssvtsetup='cd ${SANDBOX}/svt-dev-tools && source bin/svtsetup'
 alias ovftool='/Applications/VMware\ Fusion.app/Contents/Library/VMware\ OVF\ Tool/ovftool'
 alias flushdns='sudo killall -HUP mDNSResponder; sleep 1; dscacheutil -flushcache'
 alias cow='fortune | cowsay'
 alias grep='grep --color'
+alias devenv='cd ${SANDBOX}/svt-dev-tools && source bin/svtsetup'
 
 
 if [ -f ~/.git_alias ];then

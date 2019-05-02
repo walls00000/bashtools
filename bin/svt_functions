@@ -1,0 +1,1678 @@
+#!/bin/sh
+#
+# Copyright (c) 2009-2017 SimpliVity Corporation
+# All Rights Reserved
+#
+
+INST_ROOT="/var/svtfs"
+MTPT_ROOT="/mnt/svtfs"
+TMP_ROOT="/tmp/conf"
+COREDIR="/core"
+CAPTUREDIR="/core/capture"
+HAL_ROOT="/var/svtfs/svt-hal"
+POSTGRESQL_DATA_DIR="/cfgdb/postgresql"
+
+svt_check_nostart()
+{
+    _init_vars "$1"
+    local nostart="$SVTFS_DIR/nostart"
+    if [ -e "$nostart" ]; then
+        echo "Refusing to start svtfs: $(cat "$nostart")"
+        echo "Delete $nostart to retry svtfs start"
+        return 12
+    fi
+}
+
+svt_check_hal_nostart()
+{
+    _init_vars "$1"
+    local nostart="$HAL_INST_DIR/nostart"
+    if [ -e "$nostart" ]; then
+        echo "Refusing to start svt-hal: $(cat "$nostart")"
+        echo "Delete $nostart to retry svt-hal start"
+        return 12
+    fi
+}
+
+_init_vars()
+{
+    SVTFS_INST_ID="$1"
+    SVTFS_CFGDB_NAME="svtcfgdb$1"
+    SVTFS_DIR="$INST_ROOT/$SVTFS_INST_ID"
+    SVTFS_MTPT="$MTPT_ROOT/$SVTFS_INST_ID"
+    SVTFS_CFG_FILE="$SVTFS_DIR/myconf/static/svtfs.xml"
+    SVTFS_DRIVE_CFG_FILE="$SVTFS_DIR/myconf/static/drivecfg.yaml"
+    HAL_INST_DIR="$HAL_ROOT/$1"
+    [ "$2" ] && SVTFS_STORAGE_STACK="$2" || SVTFS_STORAGE_STACK="legacy"
+    [ -e "$SVTFS_DIR/myconf/static/svtarb.xml" ] &&
+        SVTFS_CFG_FILE="$SVTFS_DIR/myconf/static/svtarb.xml" || true
+    WEBINST="$INST_ROOT/www"
+}
+
+svtdistrib()
+{
+    local lsb="/etc/svt-lsb-release"
+    local key="DISTRIB_$(echo "$1" | tr a-z A-Z)"
+    [ -e "$lsb" ] &&
+        grep "^$key=" "$lsb" | cut -d'=' -f2- | tr -d '"' || true
+}
+
+lsinstances()
+{
+    ls $INST_ROOT | grep -E '^[0-9]{1,1}$'
+}
+
+svtfs_arbinit()
+{
+    _init_vars "$1"
+    SVTFS_CFG_FILE="$SVTFS_DIR/myconf/static/svtarb.xml"
+    [ -e "$SVTFS_DIR" ] && { echo "$SVTFS_DIR already exists">&2; return 1; }
+    mkdir -p "$SVTFS_DIR/log"
+    mkdir -p "$SVTFS_DIR/myconf/static"
+    cp "$SVTBUILD/src/arbiter/svtarb.xml" "$SVTFS_DIR/myconf/static/"
+    cp "$SVTBUILD/instance-files/myconf/static/dhfile.pem" "$SVTFS_DIR/myconf/static/"
+    uuidgen -r > "$SVTFS_DIR/myguid"
+    _generate_certificates
+}
+
+svtfs_restore()
+{
+    _init_vars "$1"
+    [ -e "$SVTFS_DIR" ] && { echo "$SVTFS_DIR already exists">&2; return 1; }
+    # seems strange but this next line keeps backwards compatiblity
+    [ ! -e "$TMP_ROOT/$SVTFS_INST_ID" ] && { _svtfs_init; return; }
+    _restore_dirs
+    _init_failuredomain
+}
+
+svtfs_init()
+{
+    _init_vars "$1"
+    _svtfs_init
+}
+
+_svtfs_init()
+{
+    [ -e "$SVTFS_DIR" ] && { echo "$SVTFS_DIR already exists">&2; return 1; }
+    mkdir -p "$SVTFS_DIR/log"
+
+    # Allow non-root users to write to the svtfs instance log directory.
+    # +t to prevent deletion of files not owned by the process
+    chmod a+wt "$SVTFS_DIR/log"
+
+    mkdir -p "$SVTFS_MTPT"
+    cp -fR $SVTBUILD/instance-files/* "$SVTFS_DIR"
+
+    chown -R cfgdbarchiver:cfgdbarchiver $SVTFS_DIR/archive
+
+    if [ ! -f "$SVTFS_DIR/appdata" ]; then
+        mkdir -p "$SVTFS_DIR/appdata"
+        mkdir -p "$SVTFS_DIR/appdata/auth"
+
+        chmod  0555 "$SVTFS_DIR/appdata"
+        chmod  0555 "$SVTFS_DIR/appdata/auth"
+    fi
+
+    # Any changes made to security/store must also be reflected in IdentityStoreRelocate.pm
+    if [ ! -f "$SVTFS_DIR/security" ]; then
+        mkdir -p "$SVTFS_DIR/security"
+        mkdir -p "$SVTFS_DIR/security/store"
+        mkdir -p "$SVTFS_DIR/security/svtkerb"
+
+        chmod 0511 "$SVTFS_DIR/security"
+        chmod 0700 "$SVTFS_DIR/security/store"
+        chown jauth:jauth "$SVTFS_DIR/security/store"
+
+        chmod -R 0750 "$SVTFS_DIR/security/svtkerb"
+        chown -R root:svtkerb "$SVTFS_DIR/security/svtkerb"
+    fi
+
+    [ ! -e "/scratch" ] && mkdir "/scratch"
+    [ ! -e "/scratch/upgrade" ] && mkdir "/scratch/upgrade"
+    _generate_guid
+    _init_static_config
+    _init_drive_config
+    _init_failuredomain
+    _generate_certificates
+    _init_postgresql || { echo "[Fatal] PostgreSQL initialization failed"; return 1; }
+    init_web || { echo "[Fatal] Failed to install web services"; return 1; }
+}
+
+_generate_certificates()
+{
+    local certfile="$SVTFS_DIR/$(_readconf /ControlPlane/Security/Certificate)"
+    local keyfile="$SVTFS_DIR/$(_readconf /ControlPlane/Security/Key)"
+    if [ "SVA" != "$(svtdistrib codename)" ] && [ "$keyfile" ] && [ "$certfile" ]; then
+        "$SVTBUILD/os/gencert.pl" --host "$(hostname)"           \
+                                  --cert "$certfile"             \
+                                  --key "$keyfile"               \
+                                  --config_svt "$SVTFS_CFG_FILE" \
+                                  --quiet >/dev/null
+    fi
+}
+
+renew_expiring_certificates()
+{
+    _init_vars "$1"
+    local certfile="$SVTFS_DIR/$(_readconf /ControlPlane/Security/Certificate)"
+    local keyfile="$SVTFS_DIR/$(_readconf /ControlPlane/Security/Key)"
+    if [ "$keyfile" ] && [ "$certfile" ]; then
+        "$SVTBUILD/os/gencert.pl" --host "$(hostname)"                   \
+                                  --cert "$certfile"                     \
+                                  --key "$keyfile"                       \
+                                  --config_svt "$SVTFS_CFG_FILE"         \
+                                  --renew 30                             \
+                                  --quiet
+    fi
+}
+
+_injections_clean()
+{
+    local injectionsdir="$INST_ROOT/injections"
+    [ ! -e "$injectionsdir" ] && return
+    rm -rf $injectionsdir
+}
+
+
+_expectations_clean()
+{
+    local expectationsdir="$SVTFS_DIR/expectations"
+    [ ! -e "$expectationsdir" ] && return
+    rm -rf $expectationsdir
+}
+
+_init_drive_config()
+{
+    # For now this will default to legacy, but if
+    # not running on an SVA and the stack is set to HWI, then we'll run 'HWI"
+    cfgStack=$(_readconf /StorageStack) || cfgStack="legacy"
+    driveCfgYamlFile="drivecfg.yaml.legacy"
+    if [ "SVA" != "$(svtdistrib codename)" ] && [ "$cfgStack" ] ; then
+    if [ "$cfgStack" == "HWI" ] ; then
+        driveCfgYamlFile="drivecfg.yaml.hwi"
+    fi
+    fi
+
+    echo "Configuring for $cfgStack"
+    cp -f "$SVTFS_DIR/myconf/static/$driveCfgYamlFile" "$SVTFS_DIR/myconf/static/drivecfg.yaml"
+}
+
+_try_backup()
+{
+    for file in "$@"; do
+        [ -f "$file" ] && cp -f "$file" "$TMP_ROOT/$SVTFS_INST_ID"
+    done
+}
+
+svtfs_clean()
+{
+    _init_vars "$1"
+    [ ! -e "$SVTFS_DIR" ] && return 0
+    mkdir -p "$TMP_ROOT/$SVTFS_INST_ID"
+    local phoneHomeKey="$(_readconf /ControlPlane/PhoneHome/KeyFile)"
+    _try_backup "$SVTFS_CFG_FILE" \
+                "$SVTFS_DRIVE_CFG_FILE" \
+                "$SVTFS_DIR/myguid" \
+                "$SVTFS_DIR/myconf/static/$phoneHomeKey" \
+                "$SVTFS_DIR/myconf/static/svtarb.xml" \
+                "$SVTFS_DIR/myconf/static/node.pem" \
+                "$SVTFS_DIR/myconf/static/node.key" \
+                "$SVTFS_DIR/myconf/static/dhfile.pem" \
+                "$SVTFS_DIR/myconf/ovf-env.xml"
+
+    [ ! -e "$SVTFS_DIR/myconf/static/svtarb.xml" ] && _drop_postgresql_instance
+
+    [ -e "$SVTFS_DIR/security/store/svtIdentityStore" ] &&
+        cp -f "$SVTFS_DIR/security/store/svtIdentityStore" "$TMP_ROOT/$SVTFS_INST_ID/svtIdentityStore"
+
+    [ -e "$SVTFS_DIR/.simplivity_keystore" ] &&
+        cp -f "$SVTFS_DIR/.simplivity_keystore" "$TMP_ROOT/$SVTFS_INST_ID/.simplivity_keystore"
+
+    rm -rf "$SVTFS_DIR" "$SVTFS_MTPT" /core/svtctr.db.${SVTFS_INST_ID}* /core/iohistory /tmp/dsmap.txt
+    [ -e "/ctrdb" ] && rm -rf /ctrdb/*
+    [ -e "$INST_ROOT/injections" ] && _injections_clean
+    [ -e "$SVTFS_DIR/expectations" ] && _expectations_clean
+}
+
+svthal_clean()
+{
+    _init_vars "$1"
+    [ ! -e "$HAL_INST_DIR" ] && return 0
+     rm -rf "$HAL_INST_DIR"
+}
+
+auto_support_capture()
+{
+    # run support capture iff there is a core in $COREDIR that is younger than
+    # the most recent capture file in $CAPTUREDIR. If there are no files in
+    # $CAPTUREDIR, the $CAPTUREDIR directory itself is used for the comparison
+    [ -d "$COREDIR" ] && [ -d "$CAPTUREDIR" ] || return 0
+    local youngest="$CAPTUREDIR/$(ls -t "$CAPTUREDIR" | grep CaptureOutput | head -1)"
+    local newer_core
+    for core in $(find "$COREDIR" -maxdepth 1 -type f -name "core*" -cnewer "$youngest"); do
+        # found a new core, is a from svtfs?
+        case "$core" in
+            *.gz) zgrep "###SVTVERSION" $core >/dev/null && { newer_core="$core"; break; } ;;
+            *   )  grep "###SVTVERSION" $core >/dev/null && { newer_core="$core"; break; } ;;
+        esac
+    done
+    if [ "$newer_core" ]; then
+        su -l svtcli -c "$SVTBUILD/cli/svt-support-capture --level 1 --autosc"
+    fi
+}
+
+netup()
+{
+    _init_vars "$1"
+    _readconf "/Net/$2//Interface" | while read -r intf; do
+        ifup "$intf"
+    done
+}
+
+netdown()
+{
+    _init_vars "$1"
+    _readconf "/Net/$2//Interface" | while read -r intf; do
+        # Never bring down the loopback interface (AN-3042)
+        [ "lo" = "$intf" ] && continue
+        ifdown "$intf"
+        ip addr flush dev "$intf"
+    done
+}
+
+readconf()
+{
+    _init_vars "$1"
+    _readconf "$2"
+}
+
+_readconf()
+{
+    xmlstarlet sel -T -t -m "/root$1" -v "text()" -n "$SVTFS_CFG_FILE"
+}
+
+writeconf()
+{
+    _init_vars "$1"
+    _writeconf "$2" "$3"
+}
+
+_writeconf()
+{
+    xmlstarlet ed -L -u "/root$1" -v "$2" "$SVTFS_CFG_FILE"
+}
+
+_writeconf_1()
+{
+    local xmlElem=$(xmlstarlet sel -T -t -m "/root$1" -v "text()" -n "$SVTFS_CFG_FILE")
+    if [ $xmlElem ]; then
+        _writeconf "$1" "$2"
+    else
+        local value=$(echo $1 | sed -e "s/\///g")
+        xmlstarlet ed -L -s "/root" -t elem  -n "$value" -v "$2" "$SVTFS_CFG_FILE"
+    fi
+}
+
+_getManagementIP()
+{
+    local MGMT_IF=$(_readconf /Net/Management/Interfaces/Interface)
+    if [ -z "$MGMT_IF" ] || [ "$MGMT_IF" = "lo" ]; then
+        MGMT_IF=eth0;
+    fi
+    echo `ip addr show dev $MGMT_IF | grep inet | tr -s "\t" " " | cut -d" " -f3 | cut -d"/" -f1`
+}
+
+unmount_orphaned_filesystems()
+{
+    _init_vars "$1"
+    for mtpt in $(grep "/mnt/svtfs/$SVTFS_INST_ID/" /proc/mounts | cut -d' ' -f 2); do
+        fusermount -uz "`printf $mtpt`"
+    done
+}
+
+remove_tia_driver()
+{
+    if lsmod | grep tiadriver 1>/dev/null; then
+        rmmod -s -w tiadriver
+    fi
+}
+
+tia_driver_ko()
+{
+    modfile=$(modinfo -n tiadriver 2> /dev/null || echo "")
+    if [ -n "${modfile}" ]; then
+        echo ${modfile}
+    else
+        local kernel=$(uname -r)
+        if [ -e ${SVTBUILD}/drivers/${kernel}/tiadriver.ko ]; then
+            echo "${SVTBUILD}/drivers/${kernel}/tiadriver.ko"
+        else
+            echo "No TIA driver found for kernel $kernel"
+        fi
+    fi
+}
+
+_modprobe_and_wait()
+{
+    modprobe tiadriver || insmod $(tia_driver_ko)
+    if [ -e /proc/IA0 ]; then
+        # Ensure all udev devices are created before proceeding
+        udevadm settle --exit-if-exists /dev/ia0SR
+    fi
+}
+
+load_tia_driver()
+{
+    if (! lsmod | grep -q tiadriver && [ "$TIA_DRIVER" != "" ]); then
+        echo "Loading TIA driver..."
+        _modprobe_and_wait
+        if [ ! -e /proc/IA0 ]; then
+            echo "No TIA module detected, removing the driver"
+            rmmod tiadriver
+        fi
+    fi
+}
+
+init_directories()
+{
+    _init_vars "$1"
+    # Ensure required platform directories are present before startup
+    for key in "/Analytics/DatabasePath" "/CloudStorage/CachePath"; do
+        local dir="$(_readconf $key)"
+        if [ -n "$dir" -a ! -e "$dir" ]; then
+            mkdir -p "$dir"
+        fi
+    done
+
+    if _readconf /NodeType | grep -q AWS; then
+        # On cloud nodes, /scratch is ephemeral, so we symlink /scratch/upgrade to /var/tmp/upgrade on startup
+        if [ ! -e "/scratch/upgrade" -a -e "/var/tmp/upgrade" ]; then
+            ln -s /var/tmp/upgrade /scratch/upgrade
+        fi
+    fi
+}
+
+tia_present()
+{
+    local vendor_id="1bb0"
+    SVT_HW_PRESENT="$(/usr/bin/lspci -d "${vendor_id}:")"
+    TIA_DRIVER=$(tia_driver_ko)
+    if [ "$SVT_HW_PRESENT" = "" ] || [ "$TIA_DRIVER" = "" ]; then
+        return 255
+    else
+        return 0
+    fi
+}
+
+prepare_tia_device()
+{
+# On Hyper-V, the TIA device needs a little tickle to get reset properly
+# This should be a temporary fix, until we get a permanent fix from Microsoft.
+
+    local HYPERVISOR=$(_readconf /ControlPlane/Evalta/Provider)
+    local vendor_id="1bb0"
+    if echo $HYPERVISOR | grep -q -i "hyperv" ; then
+        echo "Hyper-V workaround to reset TIA"
+        local PCID=`/usr/bin/lspci -d "${vendor_id}:" | awk ' { print $1 } '`
+        /usr/bin/setpci -s $PCID  4.l=00100404
+        /usr/bin/setpci -s $PCID  4.l=00100406
+    fi
+}
+
+
+init_devices()
+{
+    _init_vars "$1"
+    _readconf /NodeType | grep -q AWS && return 0
+    export SVTHOME PERL5LIB
+    TIA_CONFIG="$(_readconf /Indexing/IndexStoreType)"
+    TIA_LOADED="0"
+    TIA_DRIVER=$(tia_driver_ko)
+
+    if ! tia_present || [ "$TIA_CONFIG" = "SSD" ]; then
+        echo "Not using TIA: card not present, driver not found, or svtfs.xml configured for SSD"
+    elif ([ "$SVTFS_INST_ID" != "0" ]); then
+        echo "This is instance 1.  Not loading the TIA driver."
+    else
+        prepare_tia_device
+        remove_tia_driver
+        echo "Loading TIA driver..."
+        _modprobe_and_wait
+        TIA_LOADED="1"
+    fi
+
+
+    if [ -e ${SVTFS_DIR}/devslabeled ]; then
+        #SVTFS not clean, leave superblocks alone
+        return
+    else
+        if [ -e ${SVTBUILD}/bin/svtpart.pm ]; then
+            #binary install, on test or production machine
+            SVTPART="${SVTBUILD}/bin/svtpart.pm"
+        else
+            echo "svtpart.pm not found. Unable to label devices."
+            exit 1
+        fi
+
+        if [ -e ${SVTBUILD}/bin/tiacli ]; then
+            TIACLI="${SVTBUILD}/bin/tiacli"
+        else
+            echo "tiacli not found. Unable to clean TIA NVRAM."
+            exit 1
+        fi
+
+        #SVTFS is clean, label devices
+        echo "Labeling devices using --instance $SVTFS_INST_ID..."
+        ${SVTPART} --instance $SVTFS_INST_ID
+        if [ "$?" != "0" ]; then
+            echo "Error auto-labeling devices."
+            exit 1
+        fi
+        touch ${SVTFS_DIR}/devslabeled
+
+        if [ "$TIA_CONFIG" = "INDEXACCL" ]; then
+            if [ "$TIA_LOADED" = "1" ]; then
+                echo "Initializing NVRAM on TIA..."
+                _init_iacard
+                ${TIACLI} --resetnvram
+                #Unload and reload driver before stack startup (defect 7286)
+                remove_tia_driver
+                echo "Re-Loading TIA driver after clean..."
+                _modprobe_and_wait
+            fi
+        fi
+    fi
+}
+
+_init_iacard()
+{
+    if [ -e "/proc/IA0/info" -a "$SVTFS_INST_ID" = "0" ]; then
+        _writeconf /Indexing/IndexStoreType INDEXACCL
+    fi
+}
+
+_restore_dirs()
+{
+    mkdir -p "$SVTFS_DIR"
+    cp -fR $SVTBUILD/instance-files/* "$SVTFS_DIR"
+    [ -e "$TMP_ROOT/$SVTFS_INST_ID/myguid" ] && _reuse_guid || _generate_guid
+    [ -e "$TMP_ROOT/$SVTFS_INST_ID/svtfs.xml" ] &&
+        cp -f "$TMP_ROOT/$SVTFS_INST_ID/svtfs.xml" "$SVTFS_CFG_FILE" || _init_static_config
+    [ -e "$TMP_ROOT/$SVTFS_INST_ID/ovf-env.xml" ] &&
+        cp -f "$TMP_ROOT/$SVTFS_INST_ID/ovf-env.xml" "$SVTFS_DIR/myconf"
+    [ -e "$TMP_ROOT/$SVTFS_INST_ID/svtarb.xml" ] &&
+        cp -f "$TMP_ROOT/$SVTFS_INST_ID/svtarb.xml" "$SVTFS_DIR/myconf/static"
+    [ -e "$TMP_ROOT/$SVTFS_INST_ID/node.pem" ] &&
+        cp -f "$TMP_ROOT/$SVTFS_INST_ID/node.pem" "$SVTFS_DIR/myconf/static"
+    [ -e "$TMP_ROOT/$SVTFS_INST_ID/node.key" ] &&
+        cp -f "$TMP_ROOT/$SVTFS_INST_ID/node.key" "$SVTFS_DIR/myconf/static"
+    [ -e "$TMP_ROOT/$SVTFS_INST_ID/dhfile.pem" ] &&
+        cp -f "$TMP_ROOT/$SVTFS_INST_ID/dhfile.pem" "$SVTFS_DIR/myconf/static"
+    [ -e "$TMP_ROOT/$SVTFS_INST_ID/drivecfg.yaml" ] &&
+        cp -f "$TMP_ROOT/$SVTFS_INST_ID/drivecfg.yaml" "$SVTFS_DRIVE_CFG_FILE" || _init_drive_config
+
+    _drop_postgresql_instance
+    # We intentionally perform a full init here to reconfigure all cluster
+    # configuration options during the creation of the instance
+    _init_postgresql || exit $?
+
+    local phoneHomeKey="$(_readconf /ControlPlane/PhoneHome/KeyFile)"
+    [ -e "$TMP_ROOT/$SVTFS_INST_ID/$phoneHomeKey" ] &&
+        cp -f "$TMP_ROOT/$SVTFS_INST_ID/$phoneHomeKey" "$SVTFS_DIR/myconf/static"
+
+    [ ! -d "$SVTFS_DIR/security" ] &&
+        mkdir "$SVTFS_DIR/security"
+    [ ! -d "$SVTFS_DIR/security/store" ] &&
+        mkdir "$SVTFS_DIR/security/store"
+
+    [ -e "$TMP_ROOT/$SVTFS_INST_ID/svtIdentityStore" ] &&
+        cp -f "$TMP_ROOT/$SVTFS_INST_ID/svtIdentityStore" "$SVTFS_DIR/security/store/svtIdentityStore"
+    [ -e "$SVTFS_DIR/security/store/svtIdentityStore" ] &&
+        chown jauth:jauth "$SVTFS_DIR/security/store/svtIdentityStore"
+
+    [ -e "$TMP_ROOT/$SVTFS_INST_ID/.simplivity_keystore" ] &&
+        cp -f "$TMP_ROOT/$SVTFS_INST_ID/.simplivity_keystore" "$SVTFS_DIR/.simplivity_keystore"
+
+    mkdir -p "$SVTFS_MTPT"
+}
+
+validate_guid()
+{
+    if [ ${#1} -ne 36 ]; then
+        echo "ERROR: Invalid GUID generated; check output from 'dmidecode -s system-uuid' - if DMI table is corrupt, reboot and try again." >&2
+        exit 1
+    fi
+}
+
+_reuse_guid()
+{
+    # Fetch the old GUID file and put it in place,
+    # modify cfgfs subdirectory path, and modify the
+    # myconf symlink to the cfgfs subdirectory path
+    #
+    # For instance zero (production), use the system uuid so that we can
+    # identify our SVA inside VMware.
+    #
+
+    local newguid="$(head -1 "$TMP_ROOT/$SVTFS_INST_ID/myguid")"
+    validate_guid "$newguid"
+
+    local oldguid="$(head -1 "$SVTFS_DIR/myguid")"
+    rm -f "$SVTFS_DIR/myguid"
+    echo "$newguid" >"$SVTFS_DIR/myguid"
+    mv -f "$SVTFS_DIR/cfgfs/conf/$oldguid" "$SVTFS_DIR/cfgfs/conf/$newguid"
+    rm -f "$SVTFS_DIR/myconf"
+    ln -s "$SVTFS_DIR/cfgfs/conf/$newguid" "$SVTFS_DIR/myconf"
+}
+
+_generate_guid()
+{
+    # Generate a new GUID for this node, then save in myguid
+    # file, modify cfgfs subdirectory path, and modify the
+    # myconf symlink to the cfgfs subdirectory path
+    #
+    # For instance zero (production), use the system uuid so that we can
+    # identify our SVA inside VMware.
+    #
+
+    local newguid="$(dmidecode -s system-uuid | tr A-Z a-z | cut -c -36)"
+    #echo $newguid
+
+    # SMBIOS version 2.6 (and above) changed the byte order of first three fields and this is now adopted by ESXi 5.1 Update 1.
+    # https://www.vmware.com/support/vsphere5/doc/vsphere-esxi-51u1-release-notes.html
+    local smbios_version="$(dmidecode -t bios | grep SMBIOS | grep present |cut -d' ' -f2 )"
+    local version_byte_order_change="2.6"
+    version_compare "$smbios_version" "$version_byte_order_change"
+    if [ "$?" != "255" ]; then
+        # Haven't found a way for Hyper-V to use dmicode yet, most likely it needs to call Windows WMI from Hyper-V host or reset uuid w/ dmidecode value, will change it later once we find mechanism
+        local first=${newguid%%-*};
+        local revfirst="$(echo $first | awk  '{ revfirst=substr($0, 7, 2); print revfirst; }' )""$(echo $first | awk  '{ revfirst=substr($0, 5, 2); print revfirst; }' )""$(echo $first | awk  '{ revfirst=substr($0, 3, 2); print revfirst; }' )""$(echo $first | awk  '{ revfirst=substr($0, 1, 2); print revfirst; }' )";
+        local rest="${newguid#*-}"
+        local second=${rest%%-*};
+        local revsecond="$(echo $second | awk  '{ revsecond=substr($0, 3, 2); print revsecond; }' )""$(echo $rest | awk  '{ revsecond=substr($0, 1, 2); print revsecond; }' )";
+        rest="${rest#*-}";
+        local third=${rest%%-*};
+        local revthird="$(echo $third | awk  '{ revthird=substr($0, 3, 2); print revthird; }' )""$(echo $rest | awk  '{ revthird=substr($0, 1, 2); print revthird; }' )";
+        rest="${rest#*-}";
+        newguid=$revfirst"-"$revsecond"-"$revthird"-"$rest;
+    fi
+    #echo $newguid
+
+    [ "$SVTFS_INST_ID" != "0" -o "${INSIDE_LAB_MANAGER=0}" -ne "0" ] && newguid=`uuidgen -r`
+    [ -z "$newguid" ] && grep -qsi xen /sys/hypervisor/type && newguid=`${SVTBUILD}/bin/myguidgen`
+    [ -z "$newguid" ] && newguid=$(cat /var/lib/dbus/machine-id | sed -e 's/\(.\{8\}\)\(.\{4\}\)\(.\{4\}\)\(.\{4\}\)\(.\{8\}\)/\1-\2-\3-\4-\5/')
+    validate_guid "$newguid"
+
+    local oldguid=$(head -1 "$SVTFS_DIR/myguid")
+    rm -f "$SVTFS_DIR/myguid"
+    echo "$newguid" > "$SVTFS_DIR/myguid"
+    mv -f "$SVTFS_DIR/cfgfs/conf/$oldguid" "$SVTFS_DIR/cfgfs/conf/$newguid"
+    rm -f "$SVTFS_DIR/myconf"
+    ln -s "$SVTFS_DIR/cfgfs/conf/$newguid" "$SVTFS_DIR/myconf"
+}
+
+_update_static_config()
+{
+    cp -f "$TMP_ROOT/$SVTFS_INST_ID/svtfs.xml" "$SVTFS_CFG_FILE"
+
+    local phoneHomeKey="$(_readconf /ControlPlane/PhoneHome/KeyFile)"
+    if [ -e "$SVTFS_DIR/myconf/static/$phoneHomeKey" ]; then
+        cp -f "$TMP_ROOT/$SVTFS_INST_ID/$phoneHomeKey" "$SVTFS_DIR/myconf/static"
+    fi
+    return 0
+}
+
+_init_static_config()
+{
+    _writeconf /TIAManager/UnitTestFile "$SVTFS_DIR/myconf/nonstatic/tiamanager_unittest.xml"
+    _writeconf /TIAManager/NvramDataFile "$SVTFS_DIR/pooldir/tiamanager_nvram"
+    _writeconf /Svtfs/MountPoint "$SVTFS_MTPT"
+    _writeconf /CfgDB/DatabaseUrl "postgresql://dbname=$SVTFS_CFGDB_NAME"
+    local ports='/Net/Federation/ListenPort
+                 /Net/Management/ListenPort
+                 /StorageManager/StgMgrServer/Port
+                 /ObjectTransport/ObtRpcServer/Port
+                 /ObjectStore/ObsDsvServer/Port
+                 /Svtfs/DsvServer/Port
+                 /NFSd/DsvServer/Port
+                 /Balancing/RpcServer/Port
+                 /ControlPlane/ServiceDsvServer/Port
+                 /ControlPlane/DsvServer/Port
+                 /CfgDB/DsvServer/Port
+                 /IPAddressAllocator/RpcServer/Port
+                 /ControlPlane/HiveManager/DsvServer/Port
+                 /ControlPlane/Backup/DsvServer/Port
+                 /ControlPlane/LeaderDeterminationService/Port'
+    for port in $ports; do
+        _writeconf $port $(($(_readconf $port)+$SVTFS_INST_ID))
+    done
+    _add_mgmt_schema_conf
+    _writeconf_1 /StorageStack "$SVTFS_STORAGE_STACK"
+}
+
+#Validating mgmt datasource configuration information available into static conf file or not;
+#if not then it will add otherwise update it in else part.
+_add_mgmt_schema_conf()
+{
+    #For fresh installation tmp config directoy will not be available. Create it to write mgmt datasource conf, and
+    #remove the directory once information added to static conf file.
+    local tmpConfDirWasExist="1"
+
+	if [ -z "$SVTFS_DIR" ] || [[ "$SVTFS_DIR" =~ ^\ +$ ]]; then
+        _init_vars 0
+    fi
+
+    if [ ! -e "$TMP_ROOT/$SVTFS_INST_ID" ]; then
+        mkdir -p "$TMP_ROOT/$SVTFS_INST_ID"
+        tmpConfDirWasExist="0"
+    fi
+
+    cp -f "$SVTFS_DIR/myconf/static/svtfs.xml" "$TMP_ROOT/$SVTFS_INST_ID/svtfs.xml"
+
+    local mgmt_Schema="$(count_mgmt_datasource)"
+    if [ $mgmt_Schema = "0" ]; then
+        xmlstarlet ed -L --subnode /root/CfgDB -t elem -n Datasource -v "" "$TMP_ROOT/$SVTFS_INST_ID/svtfs.xml"
+        xmlstarlet ed -L --subnode /root/CfgDB/Datasource -t elem -n SchemaName -v "mgmt_schema" "$TMP_ROOT/$SVTFS_INST_ID/svtfs.xml"
+        xmlstarlet ed -L --subnode /root/CfgDB/Datasource -t elem -n UserName -v "mgmt_usr" "$TMP_ROOT/$SVTFS_INST_ID/svtfs.xml"
+        xmlstarlet ed -L --subnode /root/CfgDB/Datasource -t elem -n Ssl -v "true" "$TMP_ROOT/$SVTFS_INST_ID/svtfs.xml"
+    else
+        #This block is to update mgmt schema conf details in future.
+        xmlstarlet ed -L -u /root/CfgDB/Datasource/SchemaName -v "mgmt_schema" "$TMP_ROOT/$SVTFS_INST_ID/svtfs.xml"
+        xmlstarlet ed -L -u /root/CfgDB/Datasource/UserName -v "mgmt_usr" "$TMP_ROOT/$SVTFS_INST_ID/svtfs.xml"
+        xmlstarlet ed -L -u /root/CfgDB/Datasource/Ssl -v "true" "$TMP_ROOT/$SVTFS_INST_ID/svtfs.xml"
+    fi
+
+    cp -f "$TMP_ROOT/$SVTFS_INST_ID/svtfs.xml" "$SVTFS_DIR/myconf/static/svtfs.xml"
+
+    #remove tmpConfig directory if it was created during this method.
+    if [ $tmpConfDirWasExist = "0" ]; then
+        rm -rf "$TMP_ROOT/$SVTFS_INST_ID"
+    fi
+}
+
+count_mgmt_datasource()
+{
+    xmlstarlet sel -t -v "count(root/CfgDB/Datasource)" "$TMP_ROOT/$SVTFS_INST_ID/svtfs.xml"
+}
+
+init_postgresql()
+{
+    _init_vars "$1"
+    _init_postgresql || return $?
+}
+
+# This is an upgrade hook function, it requires
+# that all operations are performed offline without
+# having access to a running cluster instance. It is
+# invoked from the Perl upgrade scripts within a
+# chroot environment to configure the existing
+# PostgreSQL cluster with new options.
+_upgrade_postgresql_cluster()
+{
+    local instance=$1
+    _init_vars "$instance"
+    _init_postgresql_cluster "upgrade" || return $?
+}
+
+shutdown_postgresql()
+{
+    _init_vars "$1"
+    if [ "SVA" =  "$(svtdistrib codename)" ]; then
+        # Ensure the cluster is set to 'manual' startup for SVA use case
+        local STARTCFG=/etc/postgresql/9.3/svtfs/start.conf
+        if grep -q '^auto' $STARTCFG; then
+            sed -e 's/^auto/manual/' -i $STARTCFG
+        fi
+    fi
+    stopPgCluster || return $?
+}
+
+_init_postgresql()
+{
+    _init_postgresql_cluster || return $?
+    _init_postgresql_roles || return $?
+    _init_template1 || return $?
+    _init_postgresql_instance
+    return $?
+}
+
+_create_or_alter_mgmt_schema_role()
+{
+    local dbMgmtUser='mgmt_usr'
+    local dbMgmtPass=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1) > /dev/null
+    local dbSvtAggUser='svtaggregator'
+    local dbSvtAggPass=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1) > /dev/null
+    JAVA_OPT="-XX:-UseLargePages -cp /var/tmp/build/java/jauth.jar com.simplivity.jauth.server.util.InitIdentityStore"
+    JAVA_OPT="-Djava.ext.dirs=/var/tmp/build/java/ext:/usr/lib/jvm/java-8-openjdk-amd64/jre/lib/ext/ $JAVA_OPT"
+    JAVA_OPT="-Djava.security.manager $JAVA_OPT"
+    # The == is intentional in the property assignment for java.security.properties
+    JAVA_OPT="-Djava.security.properties==/var/tmp/build/java/conf/java.security $JAVA_OPT"
+    JAVA_OPT="-Dsvt.conf=/var/tmp/build/java/conf/ $JAVA_OPT"
+    if _pg_role_does_not_exist $dbMgmtUser ; then
+        `psql -U postgres -d postgres -X -q -t -A -c "CREATE ROLE $dbMgmtUser LOGIN PASSWORD '$dbMgmtPass'"` > /dev/null
+    else
+        `psql -U postgres -d postgres -X -q -t -A -c "ALTER USER $dbMgmtUser WITH PASSWORD '$dbMgmtPass'"` > /dev/null
+    fi
+    if _pg_role_does_not_exist $dbSvtAggUser ; then
+        `psql -U postgres -d postgres -X -q -t -A -c "CREATE ROLE $dbSvtAggUser LOGIN PASSWORD '$dbSvtAggPass'"` > /dev/null
+    else
+        `psql -U postgres -d postgres -X -q -t -A -c "ALTER USER $dbSvtAggUser WITH PASSWORD '$dbSvtAggPass'"` > /dev/null
+    fi
+    if [ "$1" = 1 ] ; then
+        sudo -E -u jauth /usr/bin/java $JAVA_OPT $2 $3 $4 $5 $HOST_PASS $dbMgmtUser $dbMgmtPass $dbSvtAggUser $dbSvtAggPass&> /dev/null
+    else
+        sudo -E -u jauth /usr/bin/java $JAVA_OPT $dbMgmtUser $dbMgmtPass $dbSvtAggUser $dbSvtAggPass&> /dev/null
+        local _jauthProcId=$!
+        echo "$_jauthProcId"
+    fi
+    return $?
+}
+
+_wait_to_finish_process()
+{
+    cnt=0
+    while [ "$1" = "-1" ] && [ $cnt -lt 10 ] || kill -0 $1 >/dev/null 2>&1
+    do
+        echo "Waiting to finish hyperproxy process $1"
+        sleep 1
+        cnt=$((cnt + 1))
+    done
+    return $?
+}
+
+_pg_role_does_not_exist()
+{
+    local count=`psql -U postgres -d postgres -X -q -t -A -c "select count(rolname) from pg_roles where rolname='$1'"`
+    if [ "$count" = "1" ] ; then
+        return 1
+    fi
+}
+
+_pg_owner_not_svtadmin()
+{
+    local owner=`psql -U postgres -d postgres -X -q -t -A -c "select rolname from pg_roles where oid = (select datdba from pg_database where datname = '${SVTFS_CFGDB_NAME}')"`
+    if [ "$owner" = "svtadmin" ] ; then
+        return 1
+    fi
+}
+
+_pg_database_exists()
+{
+    local count=`psql -U postgres -d postgres -X -q -t -A -c "select count(datname) from pg_database where datname='$1'"`
+    if [ "$count" = "1" ] ; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+_fixup_andes6_database()
+{
+    psql -U postgres -d ${SVTFS_CFGDB_NAME} -X -q -t -A --pset pager=off --set ON_ERROR_STOP=on -1 -f ${SVTBUILD}/postgresql/fixup-svtcfgdb.sql > /dev/null
+    return $?
+}
+
+_fixup_schema_db_access()
+{
+    myJAuthProcId=$(_create_or_alter_mgmt_schema_role)
+    local dbName=svtcfgdb${1}
+    hasDatabase "$dbName" || return 0 # Table is not present.  We're done
+    psql -U postgres -d $dbName -a -f ${SVTBUILD}/postgresql/prepare-mgmt-schema-views.sql -v v1=$dbName > /dev/null
+    # during post-start script of svtfs, _add_mgmt_schema_conf checks for mgmtSchema details in
+    # /var/svtfs/0/myconf/static/svtfs.xml and adds to the file if details doesn't exist.
+    _add_mgmt_schema_conf
+    echo "$myJAuthProcId"
+    return $?
+}
+
+_pg_svt_schema_is_missing()
+{
+    local schema=`psql -U postgres -d ${SVTFS_CFGDB_NAME} -X -q -t -A -c "select nspname from pg_namespace where nspname='svt'"`
+    if [ "$schema" = "svt" ] ; then
+        return 1
+    fi
+}
+
+_fixup_svt_schema()
+{
+    psql -U postgres -d ${SVTFS_CFGDB_NAME} -X -q -t -A --pset pager=off --set ON_ERROR_STOP=on -1 -f ${SVTBUILD}/postgresql/prepare-template.sql > /dev/null || return $?
+    psql -U postgres -d ${SVTFS_CFGDB_NAME} -X -q -t -A --pset pager=off --set ON_ERROR_STOP=on -1 -f ${SVTBUILD}/postgresql/prepare-instance.sql > /dev/null || return $?
+    psql -U postgres -d ${SVTFS_CFGDB_NAME} -X -q -t -A --pset pager=off --set ON_ERROR_STOP=on -1 -f ${SVTBUILD}/postgresql/fixup-schema.sql > /dev/null
+    return $?
+}
+
+_pg_cluster_security_not_configured()
+{
+    # Check that all our preconfigured files are set in the cluster
+    for file in ${SVTBUILD}/postgresql/pg_*.conf ; do
+        if ! cmp --silent $file /etc/postgresql/9.3/svtfs/`basename $file` ; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+_configure_pg_cluster_security()
+{
+    cp ${SVTBUILD}/postgresql/pg_*.conf /etc/postgresql/9.3/svtfs
+    if [ $? -ne 0 ]; then
+        echo "[Warn] PostgreSQL: Failed to copy in authentication config files from ${SVTBUILD}/postgresql"
+        return 1
+    fi
+}
+
+_configure_pg_cluster_options()
+{
+    echo "[Info] PostgreSQL: Configuring options for svtfs cluster"
+
+    # We must make a different selection for SVA and DVM configurations.
+    # It makes a great difference having sufficient allocation of memory
+    # for the query optimizer to get best results. Also, DVM often runs
+    # multiple concurrent svtfs processes that impose a much different
+    # load. Therefore we make two sets of memory parameters.
+
+    # DVM parameters, supports running up to 6 svtfs instances. As a minimum, the
+    # max_connections value would need to be increased to support more svtfs instances.
+    local max_connections=96
+    local shared_buffers=240MB
+    local work_mem=24MB
+    local maintenance_work_mem=60MB
+    local wal_buffers=7MB
+    local checkpoint_segments=32
+
+    # SVA parameters, one svtfs with larger work buffers and WAL segments
+    if [ "SVA" =  "$(svtdistrib codename)" ]; then
+        max_connections=30
+        shared_buffers=512MB
+        work_mem=64MB
+        maintenance_work_mem=128MB
+        wal_buffers=16MB
+        checkpoint_segments=64
+    fi
+
+    ${SVTBUILD}/dsv/dsv-postgresql-conf \
+        -o "client_min_messages=warning" \
+        -o "logging_collector=on" \
+        -o "log_directory=/var/log/postgresql/svtfs" \
+        -o "log_filename=postgresql-svtfs-%A.log" \
+        -o "log_rotation_age=1d" \
+        -o "log_truncate_on_rotation=on" \
+        -o "log_line_prefix=%m [%a:%u:%d] [%p:%x] [%l] " \
+        -o "log_min_duration_statement=-1" \
+        -o "log_statement=none" \
+        -o "log_timezone=UTC" \
+        -o "shared_preload_libraries=auto_explain,pg_stat_statements" \
+        -o "auto_explain.log_min_duration=2000" \
+        -o "auto_explain.log_verbose=on" \
+        -o "auto_explain.log_analyze=off" \
+        -o "auto_explain.log_buffers=off" \
+        -o "auto_explain.log_timing=on" \
+        -o "auto_explain.log_nested_statements=off" \
+        -o "pg_stat_statements.max=400" \
+        -o "pg_stat_statements.track=top" \
+        -o "pg_stat_statements.track_utility=off" \
+        -o "pg_stat_statements.save=on" \
+        -o "max_connections=${max_connections}" \
+        -o "superuser_reserved_connections=1" \
+        -o "shared_buffers=${shared_buffers}" \
+        -o "work_mem=${work_mem}" \
+        -o "maintenance_work_mem=${maintenance_work_mem}" \
+        -o "effective_cache_size=6GB" \
+        -o "wal_buffers=${wal_buffers}" \
+        -o "checkpoint_segments=${checkpoint_segments}" \
+        -o "checkpoint_completion_target=0.9" \
+        -o "default_statistics_target=100"
+    if [ $? -ne 0 ] ; then
+        echo "[Warn] PostgreSQL: Failed to configure options for svtfs cluster"
+        return 1
+    fi
+}
+
+createPgCluster()
+{
+    if [ ! -d "$POSTGRESQL_DATA_DIR" ]; then
+        mkdir -p "$POSTGRESQL_DATA_DIR"
+        if [ $? -ne 0 ]; then
+            echo "[Warn] Could not create PostgreSQL database area $POSTGRESQL_DATA_DIR"
+            return 1
+        fi
+        chown postgres:postgres "$POSTGRESQL_DATA_DIR"
+        if [ $? -ne 0 ]; then
+            echo "[Warn] Could not set owner for database area $POSTGRESQL_DATA_DIR"
+            return 1
+        fi
+    fi
+
+    echo "[Info] PostgreSQL: Creating svtfs cluster"
+
+    local startup="auto"
+    if [ "SVA" =  "$(svtdistrib codename)" ]; then
+        startup="manual"
+    fi
+
+    pg_createcluster --start-conf "$startup" -d "$POSTGRESQL_DATA_DIR" 9.3 svtfs
+    if [ $? -ne 0 ] ; then
+        echo "[Warn] PostgreSQL: Failed to create svtfs cluster"
+        return 1
+    fi
+
+    _configure_pg_cluster_options || return $?
+    _configure_pg_cluster_security || return $?
+    return 0
+}
+
+dropPgCluster()
+{
+    echo "[Info] PostgreSQL: Dropping svtfs cluster"
+    pg_dropcluster --stop 9.3 svtfs
+    if [ $? -ne 0 ] ; then
+        echo "[Warn] PostgreSQL: Failed to drop svtfs cluster"
+        return 1
+    fi
+}
+
+reloadPgConfig()
+{
+    echo "[Info] PostgreSQL: Reloading svtfs cluster configuration files"
+    pg_ctlcluster 9.3 svtfs reload
+    if [ $? -ne 0 ] ; then
+        echo "[Warn] PostgreSQL: Failed to reload configuration files for svtfs cluster"
+        return 1
+    fi
+}
+
+startPgCluster()
+{
+    echo "[Info] PostgreSQL: Starting svtfs cluster"
+
+    # Workaround pg_ctlcluster bug: Ensure /var/log/postgresql exists
+    if [ ! -d /var/log/postgresql ]; then
+        install -d -m 1775 -o root -g postgres /var/log/postgresql
+    fi
+
+    pg_ctlcluster 9.3 svtfs start
+    if [ $? -ne 0 -a $? -ne 2 ] ; then
+        echo "[Warn] PostgreSQL: Failed to start svtfs cluster"
+        return 1
+    fi
+}
+
+stopPgCluster()
+{
+    echo "[Info] PostgreSQL: Stopping svtfs cluster"
+    pg_ctlcluster 9.3 svtfs stop
+    if [ $? -ne 0 -a $? -ne 2 ] ; then
+        echo "[Warn] PostgreSQL: Failed to stop svtfs cluster"
+        return 1
+    fi
+}
+
+hasPgCluster()
+{
+    pg_lsclusters -h | grep -q '9.3 *svtfs '
+}
+
+isPgClusterRunning()
+{
+    local version cluster port status other
+    local tmpfile=/tmp/pgcl.running.$$
+    pg_lsclusters -h | grep '9.3 *svtfs ' > $tmpfile
+    read version cluster port status other <$tmpfile
+    rm $tmpfile
+    if [ "$status" = "online" ]; then
+        return 0
+    fi
+    return 1
+}
+
+_init_postgresql_cluster()
+{
+    local upgrade=$1
+    local hasSvtfs=0
+    local clusterRunning=0
+    local tmpfile=/tmp/pgcl.init.$$
+
+    pg_lsclusters -h > $tmpfile
+    while read version cluster port status other; do
+        if [ "$cluster" = "svtfs" -a "$version" = "9.3" ]; then
+            hasSvtfs=1
+            if [ "$status" = "online" ]; then
+                clusterRunning=1
+            fi
+            echo "[Info] PostgreSQL: Found $status svtfs cluster"
+        else
+            echo "[Info] PostgreSQL: Removing unrelated cluster $cluster ($version)"
+            pg_dropcluster --stop $version $cluster
+        fi
+    done < $tmpfile
+    rm $tmpfile
+
+    if [ $hasSvtfs -eq 0 ]; then
+        createPgCluster || return $?
+    else
+        _configure_pg_cluster_options || return $?
+        if [ "$upgrade" != "upgrade" -a $clusterRunning -eq 1 ]; then
+            reloadPgConfig || return $?
+        fi
+    fi
+
+    if [ $clusterRunning -eq 0 ]; then
+        # If this is a new cluster or not an upgrade start it
+        if [ $hasSvtfs -eq 0 -o "$upgrade" != "upgrade" ]; then
+            startPgCluster || return $?
+        fi
+    fi
+
+    if _pg_cluster_security_not_configured ; then
+        _configure_pg_cluster_security || return $?
+        if [ "$upgrade" != "upgrade" ]; then
+            reloadPgConfig || return $?
+        fi
+    fi
+
+    # If this is a new cluster for upgrade stop it now
+    if [ $hasSvtfs -eq 0 -a "$upgrade" = "upgrade" ]; then
+        stopPgCluster || return $?
+    fi
+
+    return 0
+}
+
+_init_template1()
+{
+    # Make sure template1 has our required extensions installed before using it to create our db
+    psql -U postgres -d template1 -X -q -t -A --pset pager=off --set ON_ERROR_STOP=on -1 -f ${SVTBUILD}/postgresql/prepare-template.sql > /dev/null
+    return $?
+}
+
+_init_postgresql_roles()
+{
+    hasPgCluster || return 1 # No cluster -> Fatal error
+
+    # Create all our roles if they do not exist already
+    if _pg_role_does_not_exist svtadmin ; then
+        ## svtadmin is the same as svtruntime except for the ability to assume superuser role
+        createuser -U postgres -D -I -l -R -S --no-replication svtadmin || return 1
+    fi
+
+    psql -U postgres -d postgres -X -q -t -A -c "COMMENT ON ROLE svtadmin IS 'SimpliVity DBA role'" || return 1
+    psql -U postgres -d postgres -X -q -t -A -c "GRANT postgres TO svtadmin" || return 1
+    psql -U postgres -d postgres -X -q -t -A -c "GRANT CREATE ON TABLESPACE pg_default TO svtadmin" || return 1
+
+    if _pg_role_does_not_exist svtruntime ; then
+        createuser -U postgres -D -I -l -R -S --no-replication svtruntime || return 1
+    fi
+
+    psql -U postgres -d postgres -X -q -t -A -c "COMMENT ON ROLE svtruntime IS 'SimpliVity runtime role'" || return 1
+
+    if _pg_role_does_not_exist svtsupport ; then
+        createuser -U postgres -c 2 -D -I -l -R -S --no-replication svtsupport || return 1
+    fi
+
+    psql -U postgres -d postgres -X -q -t -A -c "COMMENT ON ROLE svtsupport IS 'SimpliVity read-only role'" || return 1
+    psql -U postgres -d postgres -X -q -t -A -c "alter role svtsupport set default_transaction_isolation = serializable" || return 1
+    psql -U postgres -d postgres -X -q -t -A -c "alter role svtsupport set default_transaction_read_only = on" || return 1
+
+    if _pg_role_does_not_exist svtcli ; then
+        createuser -U postgres -c 2 -D -I -l -R -S --no-replication svtcli || return 1
+    else
+        psql -U postgres -d postgres -X -q -t -A -c "alter role svtcli with connection limit 2" || return 1
+    fi
+
+    psql -U postgres -d postgres -X -q -t -A -c "COMMENT ON ROLE svtcli IS 'SimpliVity read-only role'" || return 1
+    psql -U postgres -d postgres -X -q -t -A -c "alter role svtcli set default_transaction_isolation = serializable" || return 1
+    psql -U postgres -d postgres -X -q -t -A -c "alter role svtcli set default_transaction_read_only = on" || return 1
+}
+
+hasDatabase()
+{
+    local count=`psql -U postgres -d postgres -X -q -t -A -c "select count(datname) from pg_database where datname='$1'"`
+    if [ "$count" != "1" ] ; then
+        return 1
+    fi
+}
+
+_init_postgresql_instance()
+{
+    hasPgCluster || return 1 # No cluster -> Fatal error
+
+    # Temporarily start the cluster if it's not already up
+    local clusterWasRunning
+    if isPgClusterRunning; then
+        clusterWasRunning="true";
+    else
+        startPgCluster || return $?
+    fi
+
+    if _pg_role_does_not_exist svtadmin ; then
+        echo "[Error] PostgreSQL: Required role svtadmin does not exist"
+        return 1
+    fi
+
+    local dbname="${SVTFS_CFGDB_NAME}"
+    if hasDatabase "$dbname"; then
+        echo "[Info] PostgreSQL: Reusing existing database $dbname"
+        if _pg_owner_not_svtadmin ; then
+            echo "[Info] PostgreSQL: Fixing security for existing database $dbname"
+            _fixup_andes6_database || return $?
+        fi
+        if _pg_svt_schema_is_missing ; then
+            echo "[Info] PostgreSQL: Fixing svt namespace for existing database $dbname"
+            _fixup_svt_schema || return $?
+        fi
+        return 0
+    fi
+    echo "[Info] PostgreSQL: Creating database $dbname"
+    createdb -U postgres -T template1 -O svtadmin $dbname
+    local createResult=$?
+    if [ $createResult -eq 0 ]; then
+        psql -U postgres -d $dbname -X -q -t -A --pset pager=off --set ON_ERROR_STOP=on -1 -f ${SVTBUILD}/postgresql/prepare-instance.sql > /dev/null
+        createResult=$?
+        if [ $createResult -ne 0 ]; then
+            echo "[Error] PostgreSQL: Failed to prepare database $dbname"
+        fi
+    else
+        echo "[Error] PostgreSQL: Failed to create database $dbname"
+    fi
+
+    # Shutdown the cluster if it was not up originally
+    if [ "$clusterWasRunning" != "true" ]; then
+        stopPgCluster
+    fi
+
+    return $createResult
+}
+
+_drop_postgresql_instance()
+{
+    hasPgCluster || return 0 # No cluster -> Obviously no work is needed to drop the instance
+
+    # Temporarily start the cluster if it's not already up
+    local clusterWasRunning
+    if isPgClusterRunning; then
+        clusterWasRunning="true";
+    else
+        startPgCluster || return $?
+    fi
+
+    local dbname="${SVTFS_CFGDB_NAME}"
+    hasDatabase "$dbname" || return 0 # Table is not present.  We're done
+    echo "[Info] PostgreSQL: Dropping database $dbname"
+    dropdb -U postgres $dbname
+    local dropResult=$?
+
+    # Re-shutdown the cluster if it was not up originally
+    if [ "$clusterWasRunning" != "true" ]; then
+        stopPgCluster
+    fi
+
+    if [ $dropResult -ne 0 ]; then
+        echo "[Error] PostgreSQL: Failed to drop database $dbname"
+        return 1
+    fi
+}
+
+# the general idea behind this method is to replace a member in our XML canned output (in
+# find-failure-domains.0.tmpl) with the guid that was generated during init / restore.  For
+# instance, svtfs instance 0 would replace member #1 in Failure Domain #1 within the xml
+# canned output with the guid that was generated for svtfs instance #1.  svtfs instance 1 would
+# replace member #2 and svtfs instance 2 would replace member #1 in Failure Domain #2.
+# This results in "faking" 2 failure domains.  One with 2 members and another with 1
+# member (aka 2x1).  We will also replace entries in find-failure-domains.1.tmpl to fake
+# up a failure domain with 3 instances (aka 3x0).
+
+_init_failuredomain()
+{
+    # only do anything if the file myguid file exists
+    if ([ -e "$SVTFS_DIR/myguid" ] &&
+        [ -e "$SVTBUILD/vmware/test-templates/find-failure-domains.0.tmpl" ] &&
+        [ $SVTFS_INST_ID -ge 0 ] &&
+        [ $SVTFS_INST_ID -le 3 ]); then
+
+        local guid=$(head -1 "$SVTFS_DIR/myguid")
+        local tmplFile1="$SVTBUILD/vmware/test-templates/find-failure-domains.0.tmpl"
+        local tmplFile2="$SVTBUILD/vmware/test-templates/find-failure-domains.1.tmpl"
+
+        # replace the first instance of <member> in the first instance of FailureDomains for template 0 and 1
+        if [ "$SVTFS_INST_ID" = "0" ]; then
+            xmlstarlet ed -L -u '/Result/FailureDomains[1]/member[1]' -v "$guid" "$tmplfile1"
+            xmlstarlet ed -L -u '/Result/FailureDomains[1]/member[1]' -v "$guid" "$tmplfile2"
+        fi
+
+        # replace the second instance of <member> in the first instance of FailureDomains for template 0 and 1
+        if [ "$SVTFS_INST_ID" = "1" ]; then
+            xmlstarlet ed -L -u '/Result/FailureDomains[1]/member[2]' -v "$guid" "$tmplfile1"
+            xmlstarlet ed -L -u '/Result/FailureDomains[1]/member[2]' -v "$guid" "$tmplfile2"
+        fi
+
+        # replace the first instance of <member> in the second instance of FailureDomains for template 0
+        # replace the third instance of <member> in the first instance of FailureDomains for template 1
+        if [ "$SVTFS_INST_ID" = "2" ]; then
+            xmlstarlet ed -L -u '/Result/FailureDomains[2]/member[1]' -v "$guid" "$tmplfile1"
+            xmlstarlet ed -L -u '/Result/FailureDomains[1]/member[3]' -v "$guid" "$tmplfile2"
+        fi
+
+        # replace the second instance of <member> in the second instance of FailureDomains for template 0
+        # replace the first instance of <member> in the second instance of FailureDomains for template 1
+        if [ "$SVTFS_INST_ID" = "3" ]; then
+            xmlstarlet ed -L -u '/Result/FailureDomains[2]/member[2]' -v "$guid" "$tmplfile1"
+            xmlstarlet ed -L -u '/Result/FailureDomains[2]/member[1]' -v "$guid" "$tmplfile2"
+        fi
+    fi
+}
+
+isServiceRunning()
+{
+    local service=$1
+    status $service
+    if status $service | grep -q 'start/running'; then
+        return 0;
+    else
+        return 1;
+    fi
+}
+
+isRootReadonly()
+{
+    cat /proc/mounts | grep roroot 2>&1 > /dev/null
+    if [ $? = "0" ]; then
+        ro=`cat /proc/mounts | grep roroot | cut -d" " -f4 | cut -d"," -f1`
+        if [  "$ro" = "ro" ]; then
+            return 0
+        fi
+    else
+        return 1
+    fi
+}
+
+# A safer version of 'start' which checks first if the given service is running
+startService()
+{
+    local service=$1
+    if isServiceRunning $service; then
+        echo "Service $service is already running"
+        return 0
+    fi
+    start $service
+    return $?
+}
+
+# return 0 if the specified portis LISTENING
+portIsListening()
+{
+    local port=$1
+    netstat -anlpt | grep LISTEN | grep -q ":$port "
+}
+
+# Sleeps until a specific TCP/IP port is ready to accept traffic
+waitForListeningPort()
+{
+    local port=$1
+    local name=$2
+    cnt=0
+    while ! portIsListening $port && [ $cnt -lt 10 ]
+    do
+        if [ -n "$name" ]; then
+            echo "Waiting for $name ($port) to be ready"
+        else
+            echo "Waiting for TCP/IP port $port to be ready"
+        fi
+        sleep 1
+        cnt=$((cnt + 1))
+    done
+}
+
+# Get the IP Address a service is listening on
+getTcpListenAddress()
+{
+  local port=$1
+  netstat -anlpt | grep LISTEN | grep -v tcp6 | grep ":$port" | awk '{print $4}' | sed 's/:.*//'
+}
+
+# Verify a port is listening with nc.  Sleeps until a TCP/IP connection can be made
+checkListeningPort()
+{
+  local port=$1
+  local name=$2
+  local ip=$(getTcpListenAddress $port) 
+  if [ -z $ip ];then
+    echo "service $name is not listening on port $port"
+    return 1
+  fi
+  if [ ! -f /tmp/ncin ];then
+  cat << FIN > /tmp/ncin
+
+FIN
+  fi
+  cnt=0
+  ret=1
+  #while (( $ret > 0 && $cnt < 10 )) 
+  while [ $cnt -lt 10 ] && test $ret -gt 0
+  do
+    echo "Checking service $name on $ip:$port count=$cnt"
+    nc -vvv $ip $port < /tmp/ncin
+    ret=$?
+    sleep 1
+    cnt=$((cnt + 1))
+  done
+}
+
+# cgroups are configured on an sva, and dvm, but not an aws cloud node.
+# This function returns a string as a prefix to executing a job
+# in the case of running on an sva, this will run through cgexec with
+# the provided spec string.
+# otherwise, a blank string is returned.
+#
+# Note, that this should be used for all svt services that are not
+# svtfs proper. This will allow svt services to reserve/cap resources,
+# and leave the remaining system resources to svtfs.
+getCgExecBin()
+{
+    local cgspec="$1"
+    NODE_TYPE="$(readconf "$INSTANCE" /NodeType)" || NODE_TYPE="NONE"
+    if [ "AWS_OC" = "$NODE_TYPE" ]
+    then
+        echo ""
+    else
+        local tmp=`/sbin/start --quiet svt-cgconfig > /dev/null 2>&1`
+        echo "/usr/bin/cgexec -g $cgspec"
+    fi
+}
+
+## Initialize the web services
+init_web()
+{
+    ## Web stuff only applicable to instance 0
+    _init_vars 0
+
+    ## If the web directory is not in source, don't try to install it - not a failure
+    _init_web_dir || return 0
+
+    # Set log permissions.
+    mkdir -p /var/log/nginx
+
+    ## Change owner of /var/log/nginx to the user nginx uses
+    chown -R www-data /var/log/nginx
+    chgrp -R www-data /var/log/nginx
+
+    ## Force cgroup rules to be re-read - not all users may have existed the first time the parser ran
+    if [ -f /etc/init/svt-cgconfig.conf ]; then
+        start svt-cgconfig
+    fi
+
+    ## webinst must be in www-data group so web server can read the files
+    chgrp -R www-data $WEBINST
+
+    ## Make sure the group has read/enter access to files/subdirs in webdir
+    chmod -R 0750 $WEBINST
+
+    ## copy default index.html and graphics into /var/www ngnix home
+    cp $SVTBUILD/www/index.html /var/www/
+    cp $SVTBUILD/www/J801_Background.jpg /var/www/
+    cp $SVTBUILD/www/hpe_pri_grn_rev_rgb.svg /var/www/
+
+    ## Now init the services.
+    _init_rest
+    _init_vasa
+}
+
+## This function is run at svtfs init time
+_init_rest()
+{
+
+    local service="rest"
+
+    ## make the ssl dir
+    local servicedir="$WEBINST/services/$service"
+    local ssldir="$servicedir/ssl"
+    mkdir -p $ssldir
+
+    ## Set ownership on service dir
+    chown -R $service $servicedir
+
+    ## webinst must be in www-data group so web server can read the files
+    chgrp -R www-data $servicedir
+
+    ## Make sure the group has read access to files in webdir
+    chmod -R 0530 $servicedir
+
+    ## Make the html directory
+    mkdir -p $servicedir/html
+    chown -R $service $servicedir/html
+    chgrp -R www-data $servicedir/html
+    ## NGINX needs read and execute perms for full path to files
+    chmod -R 0550 $servicedir/html
+
+    ## copy from nginx www to rest html
+    cp $SVTBUILD/www/index.html $servicedir/html/
+    cp $SVTBUILD/www/J801_Background.jpg $servicedir/html/
+    cp $SVTBUILD/www/hpe_pri_grn_rev_rgb.svg $servicedir/html/
+
+    ## Generate the certs.
+    if [ ! -f "$ssldir/$service.pem" ]; then
+        "$SVTBUILD/os/gencert.pl" --host "$(hostname)" \
+                              --ip "$(_getManagementIP)" \
+                              --cert "$ssldir/$service.pem" \
+                              --key "$ssldir/$service.key"  \
+                              --config_svt "$SVTFS_CFG_FILE" \
+                              --force \
+                              --quiet >/dev/null
+    fi
+
+    ## Set the cert permissions
+    chmod 0440 $ssldir/$service.pem
+    chmod 0400 $ssldir/$service.key
+
+    ## copy the cert to a user friendly location, if it exists
+    if [ -d "$SVTFS_DIR/appdata/auth/" ]; then
+        cp $ssldir/$service.pem $SVTFS_DIR/appdata/auth/$service.pem
+        chmod 0444 $SVTFS_DIR/appdata/auth/$service.pem
+    fi
+
+    ## Create the log diectory
+    mkdir -p /var/log/$service
+    chown -R $service /var/log/$service
+    chgrp -R www-data /var/log/$service
+
+}
+
+_init_vasa()
+{
+    local service="vasa"
+
+    ## make the ssl dir
+    local servicedir="$WEBINST/services/$service"
+    local ssldir="$servicedir/ssl"
+    mkdir -p $ssldir
+
+    ## Set ownership on service dir
+    chown -R $service $servicedir
+
+    ## webinst must be in www-data group so web server can read the files
+    chgrp -R www-data $servicedir
+
+    ## Make sure the group has read access to files in webdir
+    chmod -R 0530 $servicedir
+
+    ## Generate the certs.
+    if [ ! -f "$ssldir/$service.pem" ]; then
+        "$SVTBUILD/os/gencert.pl" --host "$(hostname)"           \
+                              --ip "$(_getManagementIP)" \
+                              --cert "$ssldir/$service.pem" \
+                              --key "$ssldir/$service.key"  \
+                              --config_svt "$SVTFS_CFG_FILE" \
+                              --force \
+                              --quiet >/dev/null
+    fi
+
+    ## Set the cert permissions
+    chgrp www-data $ssldir/$service.pem
+    chmod 0460 $ssldir/$service.pem
+    chmod 0400 $ssldir/$service.key
+
+    ## Create the log diectory
+    mkdir -p /var/log/$service
+    chown -R $service /var/log/$service
+    chgrp -R www-data /var/log/$service
+}
+
+_init_web_dir()
+{
+    ## Copy service static and config files
+    local webdir="$SVTBUILD/www"
+    if [ -d "$webdir" ]; then
+        cp -ar $webdir $INST_ROOT
+        chgrp -R www-data $WEBINST
+    else
+        echo "[Error] Init Web: No web source files found - skipping install of web"
+        return 1
+    fi
+
+    ## Copy nginx.conf to /etc anytime root is not read only
+    ## This does not handle upgrade
+    if ! isRootReadonly; then
+        cp $SVTBUILD/etc/nginx/nginx.conf /etc/nginx/nginx.conf
+    fi
+}
+
+## This function is run at svtfs start time
+init_rest_conf()
+{
+    _init_vars 0
+}
+
+init_vasa_conf()
+{
+    _init_vars 0
+    vasaConf=$WEBINST/services/vasa/vasa-api.conf
+    if [ ! -f $vasaConf ]; then
+        echo "omnicube_virtual_controller=$(_getManagementIP)" > $vasaConf
+
+        ## Set ownership on conf file
+        chown -R vasa $vasaConf
+        chgrp -R www-data $vasaConf
+    fi
+}
+
+## This function is a helper utility for the run_as_user function below.
+## It is a replacement for running "su -c" - since this is problematic, under
+## some conditions (axeda upstart job, on a customer deploy)
+## Note: credit for this goes to Ben Guthro
+user_has_access()
+{
+    local f=$1
+    local user=$2
+    local oct=$(stat -c %a $f || echo 000)
+
+    # Is the write bit set?
+    local uw=$(((0$oct & 0200) != 0))
+    local gw=$(((0$oct & 0020) != 0))
+    local aw=$(((0$oct & 0002) != 0))
+
+    # If all users have access, declare success
+    if [ $aw = 1 ]; then
+        return 0
+    fi
+
+    # If this is owned by this user, and the user has write access
+    # declare success
+    local fuser=$(stat -c %U $f)
+    if [ $uw = 1 ] && [ $user = $fuser ]; then
+        return 0
+    fi
+
+    # Finally, if the group has write access, and this user is a
+    # member of that group, declare success
+    local grp=$(stat -c %G $f)
+    if groups $user | egrep -q "\<$grp\>"; then
+        return 0
+    fi
+
+    return 255
+}
+
+## If/when the 'everything unknown is svtcli' defect(FRB-3370) is addressed
+## as part of SEC-931, this functions should be replaced with a check to see
+## if the requested user/group is actually valid, according to PAM/NSS (like id)
+validate_user_group()
+{
+    local user="$1"
+    local group="$2"
+
+    if ! egrep -q "^${user}:" /etc/passwd; then
+        echo "`date +'%Y-%m-%d %H:%M:%SZ'`     OS config error: missing ${user} user"
+        exit 1
+    fi
+
+    if ! egrep -q "^${group}:" /etc/group; then
+        echo "`date +'%Y-%m-%d %H:%M:%SZ'`     OS config error: missing ${group} group"
+        exit 1
+    fi
+}
+
+## This function is intended to be run from upstart jobs, in order to build
+## a command line which will run as a certain user
+run_as_user()
+{
+    local user="$1"
+    local group="$2"
+    local binargs="$3"
+
+    local bin="$(echo $binargs | cut -f 1 -d ' ')"
+    local args="$(echo $binargs | cut -f 1 -d ' ' --complement)"
+
+    # Some java processes expect to be able to write to their working dir.
+    # Ensure we don't end up in / where we are unable to write
+    if [ -z "$PWD" ] || [ ! -e "$PWD" ] || ! user_has_access "$PWD" "$user"; then
+        [ -z "$INSTANCE" ] && INSTANCE=0
+        PWD=/var/svtfs/$INSTANCE/log
+    fi
+    echo "start-stop-daemon --chdir $PWD --start --chuid ${user} --group ${group} --exec $bin -- $args"
+}
+
+## This function is intended to be run from upstart jobs, in order to build
+## a command line which will run as a certain user, which need access to low network ports < 1024
+run_as_authbind_user()
+{
+    run_as_user "$1" "$2" "/usr/bin/authbind --deep $3"
+}
+
+## Functions to standardize SVT upstart logging
+svt_log()
+{
+    echo "`date +'%Y-%m-%d %H:%M:%SZ'`     $1";
+}
+
+svt_err()
+{
+    svt_log "ERROR: $1" >&2;
+}
+
+# Function to compare version number: major, minor, revision (not included)
+# return value to coparme v1 and v2: 0 (v1 eq v2); 1 (v1 gt v2); 255 (v1 lt v2)
+version_compare()
+{
+    local ver1=$1
+    local ver2=$2
+    local major1=`echo $ver1 | cut -d. -f1`
+    local minor1=`echo $ver1 | cut -d. -f2`
+    local major2=`echo $ver2 | cut -d. -f1`
+    local minor2=`echo $ver2 | cut -d. -f2`
+
+    if [ $major1 -gt $major2 ]; then
+        return 1
+    elif [ $major1 -lt $major2 ]; then
+        return 255
+    else
+        if [ $minor1 -eq $minor2 ]; then
+            return 0
+        elif [ $minor1 -gt $minor2 ]; then
+            return 1
+        else
+            return 255
+        fi
+    fi
+}
+
+
+

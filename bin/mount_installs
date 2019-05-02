@@ -1,0 +1,1 @@
+mount -t cifs //16.100.193.126/installs /media/installs -o username=Eng_User,password=svtrfs29L@B,gid=1002,uid=1001

@@ -12,14 +12,13 @@ fi
 cat << FIN
 Usage:
 
-$PROG <module1> [<module2>] . . . 
-$PROG clean <module1> [<module2>] . . . 
+$PROG [clean] [cleanIvy]  <module1> [<module2>] . . . 
 
 FIN
   exit 1
 }
 
-clean() {
+cleanIvy() {
   if [ -d $HOME/.gradle/caches ];then
     yellow "Removing gradle caches $HOME/.gradle/caches"
     rm -rf $HOME/.gradle/caches/*
@@ -33,8 +32,11 @@ if [ $# -eq 0 ];then
 fi
 
 
+if [ "X${1}" = "XcleanIvy" ]; then
+  cleanIvy  
+  shift
+fi
 if [ "X${1}" = "Xclean" ]; then
-  clean  
   CLEAN="true";
   shift  
 fi
@@ -55,8 +57,8 @@ do
   fi
 
   yellow "build ${module}"
-  ./gradlew --refresh-dependencies -x test build && green "build ${module} SUCCESS" || fatal "gradlew -x test build failed"
+  ./gradlew --refresh-dependencies  build && green "build ${module} SUCCESS" || fatal "gradlew -x test build failed"
 
   yellow "publish ${module}"
-  ./gradlew -x test publish && green "publish ${module} SUCCESS" || fatal "gradlew -x test publish failed"
+  ./gradlew  publish && green "publish ${module} SUCCESS" || fatal "gradlew -x test publish failed"
 done

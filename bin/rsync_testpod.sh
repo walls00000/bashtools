@@ -1,7 +1,7 @@
 #!/bin/bash
 LOCAL_DIR="$1"
 HOSTNAME="$2"
-REMOTE_DIR="$3"
+REMOTE_DIR="$3" #Landing directory where $LOCAL_DIR will be placed
 
 
 . ~/bin/functions.sh

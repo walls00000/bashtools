@@ -1,31 +1,33 @@
 #!/bin/bash
 source $HOME/bin/functions.sh
 BUGDIR=${BUGDIR:-`pwd`}
-
+PROG=$0
 GREP=`which grep`
+LS=`which ls`
 
 usage() {
   if [ $# -gt 0 ]; then
     red "$@" 
   fi
   cat << FIN
+$PROG 
 FIN
-
+  exit 1
 }
-if [ $# -eq 0 ];then
-  usage "Please provide last octet of each sva"
+if [ $# -gt 0 ];then
+  usage "Please do not provide any arguments"
 fi
 
-for i in $@
+for tgz in `$LS -1 Capture-*.tgz`
 do
-  if [ ! -d $i ];then
-    mkdir $i
-    pushd $i
-    file=`ls ${BUGDIR}/*.tgz | ${GREP} ${i}--`
-    echo "${file}"
-    tar zxf "${file}"
+  octet=`echo "$tgz" | sed 's/Capture-[0-9]*\.[0-9]*\.[0-9]*\.\([0-9]*\)--.*\.tgz/\1/'`
+  if [ ! -d $octet ];then
+    mkdir $octet
+    pushd $octet
+    echo "${tgz} ==> ${octet}"
+    tar zxf "${BUGDIR}/${tgz}"
     popd
   else
-    echo "Directory $i exists"
+    echo "Directory $octet exists"
   fi
 done

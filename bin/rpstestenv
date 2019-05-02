@@ -1,0 +1,515 @@
+#!/bin/bash
+REMOTEPS_NAME=${REMOTEPS_NAME:-remote-powershell}
+RPSTEST_PREFIX=${RPSTEST_PREFIX:-test}
+RETURN_CODE=0
+DEBUG=${DEBUG:-0}
+CONF=${CONF:-conf}     #Name of config directory
+LOG=${LOG:-log}        # Name of log directory
+
+red() {
+  echo "[031m$@[0m"
+}
+
+green() {
+  echo "[032m$@[0m"
+}
+
+yellow() {
+  echo "[033m$@[0m"
+}
+
+debug() {
+  MESSAGE="$@"
+  if [ 1 -eq $DEBUG ];then
+    echo "DEBUG: $MESSAGE"
+  fi
+}
+
+fatal() {
+  CODE=$1
+  MESSAGE="$2"
+  if [ "X${MESSAGE}" != "X" ];then
+    red "FATAL ERROR: ${MESSAGE}"
+  fi
+  RETURN_CODE=${CODE}
+}
+
+get_var() {
+  local prompt=$1
+  VAR=$2
+  if [ "X${VAR}" == "X" ];then
+    echo -n "${prompt}: "
+    read VAR
+  fi
+}
+
+create_dir() {
+  local directory="$1"
+  if [ ! -d $directory ];then
+    mkdir -p $directory || fatal 1 "ERROR: Cannot create directory $directory"
+  fi
+}
+
+create_conf_dir() {
+  if [ "X${CONF_DIR}" == "X" ];then
+    CONF_DIR="$REMOTEPS_DIR/$CONF"
+  fi
+  create_dir "${CONF_DIR}"
+  debug "CONF_DIR=$CONF_DIR"
+}
+
+create_log_dir() {
+  if [ "X${LOG_DIR}" == "X" ];then
+    LOG_DIR="$REMOTEPS_DIR/$LOG"
+  fi
+  create_dir "${LOG_DIR}"
+  debug "LOG_DIR=$LOG_DIR"
+}
+
+rpstest_new_conf_dir() {
+  CONF=${1:-$CONF}
+  echo "Setting \$CONF to $CONF"
+  unset CONF_DIR
+  unset CONFIG_FILE
+  unset PSRP_TEST_FILE
+  unset WSMV_TEST_FILE
+  unset CIM_TEST_FILE
+  echo "Source rpstestenv again"
+}
+
+rpstest_new_test_prefix() {
+  RPSTEST_PREFIX=${1:-RPSTEST_PREFIX}
+  unset PSRP_TEST_FILE
+  unset WSMV_TEST_FILE
+  unset CIM_TEST_FILE
+  echo "Source rpstestenv again"
+}
+
+is_ssl() {
+  local port=$1
+  if [[ "X443" == "X${port}" ]] || [[ "X5986" == "X${port}" ]];then
+    return 0
+  fi
+  return 1
+}
+
+setup() {
+if [ "X${MODULES}" == "X" ];then
+    red "WARNING: MODULES is not set!  Please set MODULES to the directory containing remote-powershell module!"
+  fi
+  if [ -d $MODULES/$REMOTEPS_NAME ];then
+    REMOTEPS_DIR="$MODULES/$REMOTEPS_NAME"
+    EXE="${REMOTEPS_DIR}/projects/remoteps-test-app/build/exe/remotepsTest/remotepsTest"
+    debug "REMOTEPS_DIR=${REMOTEPS_DIR}"
+    debug "EXE=${EXE}"
+  else
+    fatal 1 "ERROR: Cannot find ${REMOTEPS_NAME} directory in ${MODULES}.  Please set \$MODULES and \$REMOTEPS_NAME environment variable appropriately"
+  fi
+  return ${RETURN_CODE}
+}
+
+set_lib_path() {
+  WSMV_SHARED="${REMOTEPS_DIR}/projects/wsmv/build/libs/wsmv/shared"
+  PSRP_SHARED="${REMOTEPS_DIR}/projects/psrp/build/libs/psrp/shared"
+  CIM_SHARED="${REMOTEPS_DIR}/projects/cim/build/libs/cim/shared"
+  REMOTEPS_TEST_SHARED="${REMOTEPS_DIR}/projects/remoteps-test-app/build/libs/remotepsTestLib/shared"
+  NAR_DEPENDENCIES_LIB="${REMOTEPS_DIR}/projects/wsmv/build/nar-dependencies/compileNativeLinux_x64Release/lib"
+
+  for SHAREDIR in ${WSMV_SHARED} ${PSRP_SHARED} ${CIM_SHARED} ${REMOTEPS_TEST_SHARED} ${NAR_DEPENDENCIES_LIB}
+  do
+    if [ ! -d ${SHAREDIR} ];then
+      fatal 1 "No such directory: ${SHAREDIR}"
+      break
+    fi
+  done
+  if [ 0 -eq $RETURN_CODE ];then
+    export LD_LIBRARY_PATH="${WSMV_SHARED}:${PSRP_SHARED}:${CIM_SHARED}:${REMOTEPS_TEST_SHARED}:${NAR_DEPENDENCIES_LIB}"
+    debug "LD_LIBRARY_PATH=${LD_LIBRARY_PATH}"
+  fi
+  return ${RETURN_CODE}
+}
+
+write_cert_path_to_config() {
+  local cert=$1
+  
+}
+
+get_server_from_config() {
+  if [ -z ${CONFIG_FILE} ];then
+    fatal 1 "CONFIG_FILE is not defined"
+  fi
+  SERVER=`cat $CONFIG_FILE | grep server| sed 's/.*://' | sed 's/[", ]//g'`
+  return $RETURN_CODE
+}
+
+get_port_from_config() {
+  if [ -z ${CONFIG_FILE} ];then
+    fatal 1 "CONFIG_FILE is not defined"
+  fi
+  PORT=`cat $CONFIG_FILE | grep port| sed 's/.*://' | sed 's/[", ]//g'`
+  return $RETURN_CODE
+}
+
+get_cert_from_config() {
+  if [ -z ${CONFIG_FILE} ];then
+    fatal 1 "CONFIG_FILE is not defined"
+  fi
+
+  CERT=`cat $CONFIG_FILE | grep certFile | sed 's/.*://' | sed 's/[", ]//g'`
+  return ${RETURN_CODE}
+}
+
+rpstest_fetch_cert() {
+  RETURN_CODE=0
+  local server=$1
+  local port=$2
+  CERT="${CONF_DIR}/${server}.pem"
+  if [ ! -f $CERT ];then
+    yellow "fetching cert $CERT"
+    openssl s_client -connect ${server}:${port} < /dev/null 2>/dev/null | openssl x509 > ${CERT} \
+    || fatal 1 "Couldn't fetch certificate at server '${server}' and port '${port}'"
+  else
+    green "CERT=$CERT"
+    return ${RETURN_CODE}
+  fi
+  if [ 0 -eq $RETURN_CODE ];then
+    green "Created certificate file CERT=$CERT"
+  else 
+    rm $CERT
+  fi
+  return ${RETURN_CODE}
+}
+
+
+rpstest_create_configfile() {
+  RETURN_CODE=0
+  local user=$1 
+  local passwd=$2 
+  local server=$3
+  local port=$4
+
+  CONFIG_FILE="${CONF_DIR}/${TEST_PREFIX}_conf.json"
+  if [ ! -f ${CONFIG_FILE} ];then
+    get_var "username" "${user}"
+    user=${VAR}
+    get_var "password" "${passwd}"
+    passwd=${VAR}
+    get_var "server name or ip address" "${server}"
+    server=${VAR}
+    get_var "port" "${port}"
+    port=${VAR}
+
+    local cert="${CONF_DIR}/${server}.pem"
+    cat << FIN > ${CONFIG_FILE} || fatal 1 "Couldn't create config file specified by \$CONFIG_FILE: ${CONFIG_FILE}"
+{
+    "Connection": {
+        "server": "${server}",
+        "port": ${port},
+        "certFile": "$cert",
+        "pinned": true,
+        "connectionTimeout": 300,
+        "username": "${user}",
+        "password": "${passwd}",
+        "logFile": "${LOG_DIR}/${RPSTEST_PREFIX}_trace.log",
+        "outputFile": "${LOG_DIR}/${RPSTEST_PREFIX}_output.log",
+        "dumpFile": "${LOG_DIR}/${RPSTEST_PREFIX}_dump.log",
+        "dumpMessages": true,
+        "debugLevel": 6,
+        "verbose": false,
+        "kerberos": false,
+        "operationTimeout": 60000
+    }
+}
+FIN
+  fi
+
+  if [ 0 -eq ${RETURN_CODE} ];then
+    green "CONFIG_FILE=${CONFIG_FILE}"
+  fi
+  get_port_from_config #sets PORT
+  is_ssl ${PORT} 
+  if [ $? -eq 0 ];then
+    get_cert_from_config
+    get_server_from_config
+    rpstest_fetch_cert "${SERVER}" "${PORT}" 
+  fi
+
+  return ${RETURN_CODE}
+}
+
+
+#################################################
+## PSRP TESTS
+#################################################
+rpstest_create_psrp_testfile() {
+  RETURN_CODE=0
+  PSRP_TEST_FILE="${PSRP_TEST_FILE:-${CONF_DIR}/${RPSTEST_PREFIX}_psrp.json}"
+  if [ ! -f ${PSRP_TEST_FILE} ];then
+  echo "Creating \$PSRP_TEST_FILE: ${PSRP_TEST_FILE}"
+  cat << FIN > ${PSRP_TEST_FILE} || fatal 1 "Couldn't create test file specified by \$PSRP_TEST_FILE: ${PSRP_TEST_FILE}"
+{
+    "PSRPTests": {
+        "PSRPPipelineTests": [
+           {"command": "Start-Sleep -s 3", "expectedRet": 0},                    // Success
+            {"command": "Get-PSSession -ComputerName HV-ScrumAD07", "expectedRet": 0},                    // Success
+            //      {"command": "Start-Sleep -s 5", "expectedRet": 131084},               // Connection timeout
+            {"command":"Get-Date -Millisecond flobby", "expectedRet": 458757},    // Category 5, InvalidArgument
+            {"command": "Get-Date %*# flobby", "expectedRet": 458757},            // Category 5, InvalidArgument
+            {"command":"Get-Date flobby", "expectedRet": 458757},                 // Category 5, InvalidArgument
+            {"command":"", "expectedRet": 458758},                                // Category 6, InvalidData
+            {"command":"0x01x02", "expectedRet": 458765},                         // Category 13, ObjectNotFound
+            {"command":"Get-Foo", "expectedRet": 458765},                         // Category 13, ObjectNotFound
+            {"command":"Get-Date; &amp;flobby", "expectedRet": 458765},           // Category 13, ObjectNotFound
+            {"command":"Get-Date; &amp;$flobby", "expectedRet": 458759},          // Category 7, InvalidOperation
+            {"command":"Get-Date; . $flobby", "expectedRet": 458759},             // Category 7, InvalidOperation
+            {"command":"&amp;$flobby", "expectedRet": 458759},                    // Category 7, InvalidOperation
+            {"command":"Get-Date &amp;$flobby", "expectedRet": 458769},           // Category 17, ParserError
+            {"command":"Get-Date {@", "expectedRet": 458769},                     // Category 17, ParserError
+            {"command":"Get-Date (]", "expectedRet": 458769},                     // Category 17, ParserError
+            {"command":"Get-Date %*# |", "expectedRet": 458769},                  // Category 17, ParserError
+            {"command":"switch [", "expectedRet": 458769},                        // Category 17, ParserError
+            {"command":"Get-Service | Where-Object {$_.Status -flobby \"Running\"}", "expectedRet": 458769}, // Category 17 - ParserError
+            {"command":"Get-Service | Where-Object {$_.Status -eq -eq \"Running\"}", "expectedRet": 458769}, // Category 17 - ParserError
+            {"command":"Get-Service | Where-Object {$_.flobby -eq \"Running\"}", "expectedRet": 0},
+            {"command":"$flobby=\"Get-Date\";&amp;$flobby", "expectedRet": 0},
+            {"command": "Get-Date", "expectedRet": 0}                    // Success
+//            {"command":"Get-Host", "expectedRet": 0}
+        ],
+        "PSRPInvokeTests": [
+             {"command": "Start-Sleep -s 2", "expectedRet": 0, "operationTimeout": 1},                    // Success
+            {"command":"Get-Date -Millisecond flobby", "expectedRet": 458757},    // Category 5, InvalidArgument
+            {"command":"Get-Date %*# flobby", "expectedRet": 458757},             // Category 5, InvalidArgument
+            {"command":"Get-Date flobby", "expectedRet": 458757},                 // Category 5, InvalidArgument
+            {"command":"", "expectedRet": 458758},                                // Category 6, InvalidData
+            {"command":"0x01x02", "expectedRet": 458765},                         // Category 13, ObjectNotFound
+            {"command":"Get-Foo", "expectedRet": 458765},                         // Category 13, ObjectNotFound
+            {"command":"Get-Date; &amp;flobby", "expectedRet": 458765},           // Category 13, ObjectNotFound
+            {"command":"Get-Date; &amp;$flobby", "expectedRet": 458759},          // Category 7, InvalidOperation
+            {"command":"Get-Date; . $flobby", "expectedRet": 458759},             // Category 7, InvalidOperation
+            {"command":"&amp;$flobby", "expectedRet": 458759},                    // Category 7, InvalidOperation
+            {"command":"Get-Date &amp;$flobby", "expectedRet": 458769},           // Category 17, ParserError
+            {"command":"Get-Date {@", "expectedRet": 458769},                     // Category 17, ParserError
+            {"command":"Get-Date (]", "expectedRet": 458769},                     // Category 17, ParserError
+            {"command":"Get-Date %*# |", "expectedRet": 458769},                  // Category 17, ParserError
+            {"command":"switch [", "expectedRet": 458769},                        // Category 17, ParserError
+            {"command":"Get-Service | Where-Object {$_.Status -flobby \"Running\"}", "expectedRet": 458769}, // Category 17 - ParserError
+            {"command":"Get-Service | Where-Object {$_.Status -eq -eq \"Running\"}", "expectedRet": 458769}, // Category 17 - ParserError
+            {"command":"Get-Service | Where-Object {$_.flobby -eq \"Running\"}", "expectedRet": 0},
+            {"command":"$flobby=\"Get-Date\";&amp;$flobby", "expectedRet": 0},
+            {"command":"Get-Host", "expectedRet": 0, "operationTimeout": 1}
+        ]
+    }
+}
+
+FIN
+  fi
+
+  if [ 0 -eq ${RETURN_CODE} ];then
+    green "PSRP_TEST_FILE=${PSRP_TEST_FILE}"
+  fi
+  return ${RETURN_CODE}
+}
+
+
+#################################################
+## WSMV TESTS
+#################################################
+rpstest_create_wsmv_testfile() {
+  RETURN_CODE=0
+  WSMV_TEST_FILE="${WSMV_TEST_FILE:-${CONF_DIR}/${RPSTEST_PREFIX}_wsmv.json}"
+  if [ ! -f ${WSMV_TEST_FILE} ];then
+  echo "Creating \$WSMV_TEST_FILE: ${WSMV_TEST_FILE}"
+  cat << FIN > ${WSMV_TEST_FILE} || fatal 1 "Couldn't create test file specified by \$WSMV_TEST_FILE: ${WSMV_TEST_FILE}"
+{
+    "WSMVTests": {
+        "WSMVPowershellTests": [
+//            {"command": "Start-Sleep -s 10", "expectedRet": 262179, "operationTimeout": 1},  // Operation timeout
+//            {"command": "Get-PSSession", "expectedRet": 0}                    // Success
+            {"command": "Get-Date -Millisecond flobby", "expectedRet": 0},
+            {"command": "Get-Date -XXXXX flobby", "expectedRet": 0},
+            {"command": "Get-Date %*# flobby", "expectedRet": 0},
+            {"command": "Get-Date flobby", "expectedRet": 0},
+//            {"command": "", "expectedRet": 262163},
+            {"command": "", "expectedRet": 0},
+            {"command": "0x01x02", "expectedRet": 0},
+            {"command": "Get-Date; &amp;flobby", "expectedRet": 0},
+            {"command": "Get-Date; &amp;$flobby", "expectedRet": 0},
+            {"command": "Get-Date; . $flobby", "expectedRet": 0},
+            {"command": "&amp;$flobby", "expectedRet": 0},
+            {"command": "Get-Date &amp;$flobby", "expectedRet": 0},
+            {"command": "Get-Date {@", "expectedRet": 0},
+            {"command": "Get-Date (]", "expectedRet": 0},
+            {"command": "Get-Date %*# |", "expectedRet": 0},
+            {"command": "switch [", "expectedRet": 0},
+            {"command": "Get-Service | Where-Object {$_.Status -flobby \"Running\"}", "expectedRet": 0},
+            {"command": "Get-Service | Where-Object {$_.flobby -eq \"Running\"}", "expectedRet": 0},
+            {"command": "Get-Service | Where-Object {$_.Status -eq -eq \"Running\"}", "expectedRet": 0},
+            {"command": "$flobby=\"Get-Date\";&amp;$flobby", "expectedRet": 0},
+            //    {"command": "Get-Service | Where-Object {$_.Status -eq \"Running\"}", "expectedRet": 0},
+            {"command": "Get-Host", "expectedRet": 0}
+        ]
+    }
+}
+FIN
+  fi
+
+  if [ 0 -eq ${RETURN_CODE} ];then
+    green "WSMV_TEST_FILE=${WSMV_TEST_FILE}"
+  fi
+  return ${RETURN_CODE}
+}
+
+#################################################
+## CIM TESTS
+#################################################
+rpstest_create_cim_testfile() {
+  RETURN_CODE=0
+  CIM_TEST_FILE="${CIM_TEST_FILE:-${CONF_DIR}/${RPSTEST_PREFIX}_cim.json}"
+  if [ ! -f ${CIM_TEST_FILE} ];then
+  echo "Creating \$CIM_TEST_FILE: ${CIM_TEST_FILE}"
+  cat << FIN > ${CIM_TEST_FILE} || fatal 1 "Couldn't create test file specified by \$CIM_TEST_FILE: ${CIM_TEST_FILE}"
+//PSRP_S_INVALID_ARGUMENT        = 458757 (0x00070005)
+//PSRP_S_INVALID_DATA            = 458758 (0x00070006)
+//PSRP_S_INVLID_OPERATION        = 458759 (0x00070007)
+//PSRP_S_OBJECT_NOT_FOUND        = 458765 (0x0007000D)
+//PSRP_S_PARSER_ERROR            = 458769 (0x00070011)
+
+//WSMV_S_DESTINATION_UNREACHABLE = 262153 (0x00040009)
+//WSMV_S_INTERNAL_WSMAN_ERROR    = 262163 (0x00040013)
+//WSMV_S_OPERATION_TIMEDOUT      = 262179 (0x00040023)
+//WSMV_S_UNSUPPORTED_FEATURE     = 262183 (0x00040027)
+
+//WSMV_S_INVALID_HOST            = 131078 (0x00020006)  // Could not resolve host name
+//WSMV_S_CONNECTION_ERROR        = 131079 (0x00020007)  // Could not connect to host (e.g. invalid port or address)
+//WSMV_S_REQUEST_TIMEDOUT        = 131084 (0x0002000C)
+//WSMV_S_INVALID_CERTIFICATE     = 131093 (0x00020015)  // Could not validate server certifcate
+//WSMV_S_LOGON_DENIED            = 131098 (0x0002001A)  // Could not authenticate to server (e.g. invalid password)
+
+{
+    "CIMTests": {
+        "#CIMGetClassTests":[
+            {"ns": "root/cimv2", "className": "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/cimv2/Win32_Service", "includeIneritedElements": true, "includeQualifiers": false, "includeClassOrigin": true, "expectedRet": 0},
+            {"ns": "root/cimv2", "className": "CIM_InvalidName", "includeIneritedElements": true, "includeQualifiers": false, "includeClassOrigin": true, "expectedRet": 262163},
+            {"ns": "/invlid", "className": "CIM_ComputerSystem", "includeIneritedElements": true, "includeQualifiers": false, "includeClassOrigin": true, "expectedRet": 262153},
+            {"ns": "root/cimv2", "className": "CIM_Chassis", "includeIneritedElements": true, "includeQualifiers": false, "includeClassOrigin": true, "expectedRet": 0},
+            {"ns": "root/cimv2", "className": "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/cimv2/CIM_Chassis", "includeIneritedElements": true, "includeQualifiers": false, "includeClassOrigin": true, "expectedRet": 0},
+            {"ns": "/invlid", "className": "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/cimv2/CIM_Chassis", "includeIneritedElements": true, "includeQualifiers": false, "includeClassOrigin": true, "expectedRet": 262153},
+            {"className": "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/cimv2/CIM_Chassis", "includeIneritedElements": true, "includeQualifiers": false, "includeClassOrigin": true, "expectedRet": 262163}
+        ],
+        "#CIMEnumerateClassesTests":[
+            {"ns": "root/cimv2", "className": "CIM_ComputerSystem", "includeSubClasses": true, "includeInheritedElements": true, "includeQualifiers": false, "includeClassOrigin": false, "maxItems": 20, "expectedRet": 0},
+            {"ns": "root/cimv2", "className": "CIM_Chassis", "includeSubClasses": true, "includeInheritedElements": true, "includeQualifiers": false, "includeClassOrigin": false, "maxItems": 20, "expectedRet": 0},
+            {"ns": "root/cimv2", "className": "CIM_PhysicalMemory", "includeSubClasses": true, "includeInheritedElements": true, "includeQualifiers": false, "includeClassOrigin": false, "maxItems": 20, "expectedRet": 0}
+        ],
+        "#CIMEnumerateClassNamesTests": [
+            {"ns": "root/cimv2", "className": "CIM_ComputerSystem", "includeSubClasses": false, "maxItems": 20, "expectedRet": 0},
+            {"ns": "root/cimv2", "className": "CIM_ComputerSystem", "includeSubClasses": false, "maxItems": 20, "expectedRet": 0},
+            {"ns": "root/cimv2", "className": "CIM_Process", "includeSubClasses": false, "maxItems": 20, "expectedRet": 0},
+            {"ns": "root/cimv2", "className": "CIM_Chassis", "includeSubClasses": true, "maxItems": 20, "expectedRet": 0}
+        ],
+        "#CIMGetInstanceTests": [
+//            {"ns": "", "className": "http://schemas.microsoft.com/wbem/wsman/1/config", "includeClassOrigin": true, "property": "", "expectedRet": 262153},
+            {"ns": "", "className": "INVALID?Name=VMware:HostPowerManagement", "includeClassOrigin": true, "property": "", "expectedRet": 262153},
+            {"ns": "INVALID", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_Service?Name=winrm", "includeClassOrigin": true, "property": "", "expectedRet": 262153},
+            {"ns": "", "className": "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/cimv2/Win32_Service?Name=winrm", "includeClassOrigin": true, "property": "", "expectedRet": 0},
+            {"ns": "", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_Service?Name=winrm", "includeClassOrigin": true, "property": "", "expectedRet": 262153},
+            {"ns": "", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_Service?INVALID=winrm", "includeClassOrigin": true, "property": "", "expectedRet": 262153},  // Windows returns WSMV_S_DESTINATION_UNREACHABLE, ESXi WSMV_S_INVALID_SELECTORS
+            {"ns": "", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_Service?Name=INVALID", "includeClassOrigin": true, "property": "", "expectedRet": 262153}, // Windows returns WSMV_S_DESTINATION_UNREACHABLE, ESXi WSMV_S_INVALID_SELECTORS
+            //    {CIMClient::Interop_NS, "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_RegisteredProfile?InstanceID=omc:systemmemoryProfile", "includeClassOrigin": true, "property": "", WSMV_S_SUCCESS},
+            {"ns": "", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_RegisteredProfile?InstanceID=omc:systemmemoryProfile", "includeClassOrigin": true, "property": "", "expectedRet": 262153},
+            {"ns": "", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_PowerSupply?DeviceID=INVALID", "includeClassOrigin": true, "property": "", "expectedRet": 262153} // Windows returns WSMV_S_DESTINATION_UNREACHABLE, ESXi WSMV_S_INVALID_SELECTORS
+
+        ],
+        "CIMEnumerateInstancesTests": [
+            {"ns": "", "className": "http://schemas.microsoft.com/wbem/wsman/1/windows/shell", "excludeSubClassProperties": false, "includeClassOrigin": false, "fragment": "", "maxItems": 20, "expectedRet": 0, "operationTimeout": 1},
+            {"ns": "", "className": "http://schemas.microsoft.com/wbem/wsman/1/config/winrs/customremoteshell", "excludeSubClassProperties": false, "includeClassOrigin": false, "fragment": "", "maxItems": 20, "expectedRet": 0, "operationTimeout": 1},
+            {"ns": "root/interop", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_RegisteredProfile", "excludeSubClassProperties": false, "includeClassOrigin": true, "fragment": "", "maxItems": 20, "expectedRet": 0, "operationTimeout": 1},
+            {"ns": "", "className": "http://INVALID/CIM_Chassis", "excludeSubClassProperties": true, "includeClassOrigin": false, "fragment": "", "maxItems": 20, "expectedRet": 262153},
+            {"ns": "root/cimv2", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_Chassis", "excludeSubClassProperties": false, "includeClassOrigin": true, "fragment": "", "maxItems": 20, "expectedRet": 0},
+            {"ns": "", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_PhysicalMemory", "excludeSubClassProperties": true, "includeClassOrigin": false, "fragment": "../CIM_NetworkAdapter[ServiceName=\"tunnel\"]/Name", "maxItems": 20, "expectedRet": 262183 }, //Windows returns WSMV_S_UNSUPPORTED_FEATURE, ESXi returns WSMV_S_SUCCESS
+            //    {"ns": "", "className", "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_PowerSupply", "excludeSubClassProperties": true, "includeClassOrigin": false, "fragment": "", "maxItems": 20, "expectedRet": 0},
+            {"ns": "root/cimv2", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_Processor", "excludeSubClassProperties": true, "includeClassOrigin": false, "fragment": "", "maxItems": 20, "expectedRet": 0, "operationTimeout": 1},
+            {"ns": "root/cimv2", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_Service", "excludeSubClassProperties": true, "includeClassOrigin": false, "fragment": "", "maxItems": 20, "expectedRet": 0},
+            {"ns": "root/cimv2", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_NetworkAdapter", "excludeSubClassProperties": true, "includeClassOrigin": false, "fragment": "", "maxItems": 20, "expectedRet": 0}
+            //    {"ns": "", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_NumericSensor", "excludeSubClassProperties": true, "includeClassOrigin": false, "fragment": "", "maxItems": 20, WSMV_S_DESTINATION_UNREACHABLE}
+            //    {"ns": "", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_USBDevice", "excludeSubClassProperties": true, "includeClassOrigin": false, "fragment": "", "maxItems": 20, "expectedRet": 0},
+        ],
+        "CIMEnumerateInstanceNamesTests": [
+            {"ns": "", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_RegisteredProfile", "maxItems": 20, "expectedRet": 0},
+            {"ns": "", "className": "http://INVALID/CIM_Chassis", "maxItems": 20, "expectedRet": 262153},
+            {"ns": "root/cimv2", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_Chassis", "maxItems": 20, "expectedRet": 0},
+            {"ns": "", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_Chassis", "maxItems": 20, "expectedRet": 262153},
+            {"ns": "root/cimv2", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_PhysicalMemory", "maxItems": 20, "expectedRet": 0},
+            {"ns": "root/cimv2", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_PowerSupply", "maxItems": 20, "expectedRet": 0},
+            {"ns": "root/cimv2", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_Processor", "maxItems": 20, "expectedRet": 0},
+            {"ns": "root/cimv2", "className": "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_NetworkAdapter", "maxItems": 20, "expectedRet": 0}
+        ]
+    }
+}
+FIN
+  fi
+
+  if [ 0 -eq ${RETURN_CODE} ];then
+    green "CIM_TEST_FILE=${CIM_TEST_FILE}"
+  fi
+  return ${RETURN_CODE}
+}
+
+rpstest_create_testfiles() {
+  RETURN_CODE=0
+  rpstest_create_psrp_testfile || return ${RETURN_CODE}
+  rpstest_create_wsmv_testfile || return ${RETURN_CODE}
+  rpstest_create_cim_testfile || return ${RETURN_CODE}
+  return ${RETURN_CODE}
+}
+
+rpstest_run() {
+  EXE="${REMOTEPS_DIR}/projects/remoteps-test-app/build/exe/remotepsTest/remotepsTest"
+  debug "$EXE" $@
+  $EXE $@
+}
+
+rpstest_usage() {
+cat << FIN
+
+#####################################################################################
+# Environment Variables:
+#   MODULES=${MODULES}
+#   REMOTEPS_NAME=${REMOTEPS_NAME}
+#   RPSTEST_PREFIX=${RPSTEST_PREFIX}
+#   DEBUG=${DEBUG}
+#   CONF=${CONF}
+#   LOG=${LOG}
+#   CONF_DIR=${CONF_DIR}
+#   LOG_DIR=${LOG_DIR}
+#   CONFIG_FILE=${CONFIG_FILE}
+#   CERT=${CERT}
+#   PSRP_TEST_FILE=${PSRP_TEST_FILE}
+#   WSMV_TEST_FILE=${WSMV_TEST_FILE}
+#   CIM_TEST_FILE=${CIM_TEST_FILE}
+#   EXE=${EXE}
+# 
+# Available functions:
+#   rpstest_usage
+#   rpstest_run -C \$CONFIG_FILE -T \$PSRP_TEST_FILE|\$WSMV_TEST_FILE|\$CIM_TEST_FILE . . . 
+#   rpstest_create_configfile [username] [password] [server] [port]
+#   rpstest_create_testfiles
+#   rpstest_create_psrp_testfile
+#   rpstest_create_wsmv_testfile
+#   rpstest_create_cim_testfile
+#   rpstest_new_conf_dir [CONF]
+#   rpstest_new_test_prefix [RPSTEST_PREFIX]
+#   rpstest_fetch_cert <server> <port>
+#####################################################################################
+
+FIN
+}
+
+setup || return ${RETURN_CODE}
+create_conf_dir || return ${RETURN_CODE}
+create_log_dir || return ${RETURN_CODE}
+set_lib_path || return ${RETURN_CODE}
+rpstest_create_configfile || return ${RETURN_CODE}
+rpstest_create_testfiles || return ${RETURN_CODE}
+rpstest_usage
+return ${RETURN_CODE} 

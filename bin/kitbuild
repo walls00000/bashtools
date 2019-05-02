@@ -1,0 +1,1 @@
+./gradlew kitBranch --branch <local_branch_name> --build <kit_number>
