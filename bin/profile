@@ -5,10 +5,14 @@ alias vim74='/Applications/MacVim.app/Contents/MacOS/Vim'
 alias iterm='/Applications/iTerm.app/Contents/MacOS/iTerm'
 alias finder='~/bin/finder.sh'
 alias eclipse="/home/wwallace/EclipseMarsforOmniStack/eclipse &"
+alias eclipse2019="/home/wwallace/EclipseIDE_2019-12/eclipse/eclipse &"
 export EDITOR="vim"
 export GIT_EDITOR="vim"
 export JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64"
 export MVN_BIN="/Users/willwallace/apache-maven-3.3.9/bin"
+export GOROOT="/usr/local/go"
+export GO_BIN="${GOROOT}/bin"
+export GOPATH="$HOME/go"
 export SANDBOX="${HOME}/sandbox"
 export SSH_USER="wwallace"
 export BUGS=/media/wwallace/shared/BUGS
@@ -19,86 +23,32 @@ export ROBOT_ROOT="/home/wwallace/sandbox/robot"
 alias ssvtsetup='cd ${SANDBOX}/svt-dev-tools && source bin/svtsetup'
 alias ovftool='/Applications/VMware\ Fusion.app/Contents/Library/VMware\ OVF\ Tool/ovftool'
 alias flushdns='sudo killall -HUP mDNSResponder; sleep 1; dscacheutil -flushcache'
-alias cow='fortune | cowsay'
+alias cow='/usr/games/fortune | cowsay'
 alias grep='grep --color'
 alias devenv='cd ${SANDBOX}/svt-dev-tools && source bin/svtsetup'
+alias alljar='find . -name \*all.jar'
+alias vscode="sh -c \"env LD_LIBRARY_PATH\=\$HOME/lib /usr/share/code/code\" %U"
 
 
 if [ -f ~/.git_alias ];then
   source ~/.git_alias
 fi
 
+source "/home/wwallace/.sdkman/bin/sdkman-init.sh"
+
 source ${HOME}/bin/functions.sh
-
-xssh() {
-  for host in $@
-  do
-  	echo "Connecting to ${host}"
-    case ${host} in
-      foreman-prod*)
-        fg="yellow" 
-        bg="rgb:80/00/00"
-        ;;
-      smartproxy-frco*)
-        fg="white" 
-        bg="rgb:af/00/00"
-        ;;
-      smartproxy-wb*)
-        fg="white" 
-        bg="rgb:80/00/00"
-        ;;
-      vyos)
-        fg="black" 
-        bg="gray"
-        ;;
-      *prod_alt)
-        fg="white"
-        bg="rgb:00/5f/87"
-        ;;
-      *)
-        fg="white"
-        bg="black"
-        ;;
-    esac
-    xterm -fg ${fg} -bg ${bg} -e ssh ${host} &
-  done
-}
-
-vssh() {
-  for host in $@
-  do
-  	echo "Connecting to ${host}"
-    case ${host} in
-      ubuntu)
-        xterm -fg white -bg rgb:5f/00/5f -e vagrant ssh ${host} &
-      ;;
-
-      centos)
-        xterm -fg black -bg rgb:ff/df/af -e vagrant ssh ${host} &
-      ;;
-
-      puppet_master*)
-        xterm -fg white -bg rgb:5f/00/d7 -e vagrant ssh ${host} &
-      ;;
-
-      *)
-        xterm -fg yellow -bg rgb:00/00/5f -e vagrant ssh ${host} &
-      ;;
-    esac
-  done
-}
 
 xvim() {
   for i in $@
   do
-    xterm -rv -e vim $i &
+    xterm  -e vim $i &
   done
 }
 
 xless() {
   for i in $@
   do
-    xterm -rv -e less $i &
+    xterm -e less $i &
   done
 }
 
@@ -129,6 +79,8 @@ fif ${@}
 echo $PATH | grep -q ${MVN_BIN} || export PATH=${MVN_BIN}:${PATH}
 echo $PATH | grep -q ${JAVA_HOME}/bin || export PATH=${JAVA_HOME}/bin:${PATH}
 echo $PATH | grep -q ${HOME}/bin || export PATH=${HOME}/bin:${PATH}
+echo $PATH | grep -q ${GOPATH}/bin || export PATH=${PATH}:${GOPATH}/bin
+echo $PATH | grep -q ${GO_BIN} || export PATH=${PATH}:${GO_BIN}
 
 #RVM a ruby version manager
 if [ -z ${RVMBIN} ];then
@@ -168,6 +120,10 @@ envs() {
   done
   popd > /dev/null
   #cd $OLDPWD
+}
+
+buildDiscriptor() {
+  grep 'artifactoryBuildMetadata' ~/.gradle/gradle.properties  | grep -v \# | awk -F= '{print $2}'
 }
 
 cow
