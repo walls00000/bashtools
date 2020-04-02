@@ -1,4 +1,0 @@
-#!/bin/bash
-GRADLE_PROPERTIES=~/.gradle/gradle.properties
-METADATA=`cat $GRADLE_PROPERTIES | grep -v "\#" | grep artifactoryBuildMetadata`
-echo buildDescriptor="$METADATA"

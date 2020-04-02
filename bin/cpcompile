@@ -1,2 +1,0 @@
-./gradlew createTestScriptTestCombinedSvtcontrolhandlerDebugSharedLibBoostTest
-./projects/control-plane/build/test-wrappers/test_combined_svtcontrolhandler/debug/runinteractive

@@ -1,2 +1,0 @@
-. ~/bin/functions.sh
-xvim $@

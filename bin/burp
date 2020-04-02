@@ -1,3 +1,0 @@
-#!/bin/bash --
-burpjar='/Users/willwallace/bin/burpsuite_free_v1.6.32.jar'
-java -jar ${burpjar} &

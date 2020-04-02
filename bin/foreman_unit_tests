@@ -1,5 +1,0 @@
-bundle exec rake plugins
-bundle exec rake -T
-bundle exec rake test
-bundle exec rake foreman_windows_extensions:rubocop
-bundle exec rake test:foreman_windows_extensions
