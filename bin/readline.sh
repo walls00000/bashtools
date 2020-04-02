@@ -8,4 +8,6 @@ readLine() {
  done < "$file"
 }
 
+set -x
 readLine $FILE
+set +x

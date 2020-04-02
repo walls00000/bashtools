@@ -1,54 +1,151 @@
 #!/bin/bash --
 . ~/.bashrc
+
+# Proxy configuration either DEFAULT or K8S for kubernetes deployments to vmware
+export PROXY_CONFIG=${PROXY_CONFIG:-NONE}
+
+#####################################################
 alias ls='ls --color'
 alias vim74='/Applications/MacVim.app/Contents/MacOS/Vim'
 alias iterm='/Applications/iTerm.app/Contents/MacOS/iTerm'
 alias finder='~/bin/finder.sh'
-alias eclipse="/home/wwallace/EclipseMarsforOmniStack/eclipse &"
-alias eclipse2019="/home/wwallace/EclipseIDE_2019-12/eclipse/eclipse &"
+alias eclipse="xterm -e  /home/wwallace/EclipseMarsForC++/eclipse &"
+alias eclipse2020="xterm -e /home/wwallace/eclipse/cpp-2020-03/eclipse/eclipse &"
+alias komodo="$HOME/Komodo-IDE-12/bin/komodo &"
+
 export EDITOR="vim"
 export GIT_EDITOR="vim"
 export JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64"
 export MVN_BIN="/Users/willwallace/apache-maven-3.3.9/bin"
-export GOROOT="/usr/local/go"
-export GO_BIN="${GOROOT}/bin"
-export GOPATH="$HOME/go"
 export SANDBOX="${HOME}/sandbox"
+export AUTOHOME="${HOME}/sandbox/automation"
+export RUBYGEMS_HOST=http://artifact.simplivt.local:8081/artifactory/api/gems/gems-foxhound-local
 export SSH_USER="wwallace"
-export BUGS=/media/wwallace/shared/BUGS
-export SVA_TOOLS=${HOME}/SVA/tools
-export ROBOT_ROOT="/home/wwallace/sandbox/robot"
 #export GIT_SSL_NO_VERIFY=1
+export ROBOT_ROOT="/home/wwallace/sandbox/robot"
+export FIB_IMAGE_PATH="/media/templates/FIB-VMs"
+
+## $GOPATH:  The customizable go directory for additional modules and executables
+export GOPATH=$HOME/go
+## $GOROOT: The root go installation directory
+export GOROOT=/usr/local/go
+## $GO_BIN: This is the directory containing go executables
+export GO_BIN=$GOROOT/bin
 
 alias ssvtsetup='cd ${SANDBOX}/svt-dev-tools && source bin/svtsetup'
 alias ovftool='/Applications/VMware\ Fusion.app/Contents/Library/VMware\ OVF\ Tool/ovftool'
 alias flushdns='sudo killall -HUP mDNSResponder; sleep 1; dscacheutil -flushcache'
-alias cow='/usr/games/fortune | cowsay'
+alias cow='/usr/games/fortune | /usr/games/cowsay'
 alias grep='grep --color'
 alias devenv='cd ${SANDBOX}/svt-dev-tools && source bin/svtsetup'
-alias alljar='find . -name \*all.jar'
-alias vscode="sh -c \"env LD_LIBRARY_PATH\=\$HOME/lib /usr/share/code/code\" %U"
+alias report="${AUTOHOME}/ATF/scripts/gen_report.pl"
 
 
 if [ -f ~/.git_alias ];then
   source ~/.git_alias
 fi
 
-source "/home/wwallace/.sdkman/bin/sdkman-init.sh"
-
 source ${HOME}/bin/functions.sh
+
+set_proxy() {
+    case $PROXY_CONFIG in
+        K8S)
+            export http_proxy=http://proxy.houston.hpecorp.net:8080
+            export https_proxy=http://proxy.houston.hpecorp.net:8080
+            export no_proxy=.hpecorp.net,.simplivt.local,10.0.0.0/8
+        ;;
+
+        DEFAULT)
+            export http_proxy=http://localhost:8888
+            export https_proxy=http://localhost:8888
+            export no_proxy=.hpecorp.net,.simplivt.local,10.0.0.0/8
+         ;;
+
+         *)
+             unset http_proxy
+             unset https_proxy
+             unset no_proxy
+	 ;;
+    esac
+    cat << FIN
+    PROXY_CONFIG=$PROXY_CONFIG
+    http_proxy=$http_proxy
+    https_proxy=$https_proxy
+    no_proxy=$no_proxy
+FIN
+}
+
+set_proxy
+
+xssh() {
+  for host in $@
+  do
+  	echo "Connecting to ${host}"
+    case ${host} in
+      foreman-prod*)
+        fg="yellow" 
+        bg="rgb:80/00/00"
+        ;;
+      smartproxy-frco*)
+        fg="white" 
+        bg="rgb:af/00/00"
+        ;;
+      smartproxy-wb*)
+        fg="white" 
+        bg="rgb:80/00/00"
+        ;;
+      vyos)
+        fg="black" 
+        bg="gray"
+        ;;
+      *prod_alt)
+        fg="white"
+        bg="rgb:00/5f/87"
+        ;;
+      *)
+        fg="white"
+        bg="black"
+        ;;
+    esac
+    xterm -fg ${fg} -bg ${bg} -e ssh ${host} &
+  done
+}
+
+vssh() {
+  for host in $@
+  do
+  	echo "Connecting to ${host}"
+    case ${host} in
+      ubuntu)
+        xterm -fg white -bg rgb:5f/00/5f -e vagrant ssh ${host} &
+      ;;
+
+      centos)
+        xterm -fg black -bg rgb:ff/df/af -e vagrant ssh ${host} &
+      ;;
+
+      puppet_master*)
+        xterm -fg white -bg rgb:5f/00/d7 -e vagrant ssh ${host} &
+      ;;
+
+      *)
+        xterm -fg yellow -bg rgb:00/00/5f -e vagrant ssh ${host} &
+      ;;
+    esac
+  done
+}
 
 xvim() {
   for i in $@
   do
-    xterm  -e vim $i &
+    xterm -rv -e vim $i &
   done
 }
 
 xless() {
   for i in $@
   do
-    xterm -e less $i &
+    xterm -rv -e less $i &
   done
 }
 
@@ -79,8 +176,9 @@ fif ${@}
 echo $PATH | grep -q ${MVN_BIN} || export PATH=${MVN_BIN}:${PATH}
 echo $PATH | grep -q ${JAVA_HOME}/bin || export PATH=${JAVA_HOME}/bin:${PATH}
 echo $PATH | grep -q ${HOME}/bin || export PATH=${HOME}/bin:${PATH}
-echo $PATH | grep -q ${GOPATH}/bin || export PATH=${PATH}:${GOPATH}/bin
+echo $PATH | grep -q ${HOME}/testbeds || export PATH=${HOME}/testbeds:${PATH}
 echo $PATH | grep -q ${GO_BIN} || export PATH=${PATH}:${GO_BIN}
+echo $PATH | grep -q ${GOPATH}/bin || export PATH=${PATH}:${GOPATH}/bin
 
 #RVM a ruby version manager
 if [ -z ${RVMBIN} ];then
@@ -122,8 +220,16 @@ envs() {
   #cd $OLDPWD
 }
 
-buildDiscriptor() {
-  grep 'artifactoryBuildMetadata' ~/.gradle/gradle.properties  | grep -v \# | awk -F= '{print $2}'
+isDocker() {
+    myname=$(hostname | cut -c1-3)
+    if [ "X$myname" == "Xdvm" ];then 
+       echo "Running on native Linux"
+       return 0
+   else
+       echo "Using docker"
+       return 1
+   fi
 }
 
-cow
+isDocker && cow
+cd $HOME

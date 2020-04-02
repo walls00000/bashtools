@@ -15,8 +15,8 @@ usage() {
   Usage: $PROG <arg1> . . .
      valid args:
         show
-        start SMALL|MEDIUM|LARGE|ALL
-        kill  SMALL|MEDIUM|LARGE|ALL
+        start SMALL|MEDIUM|LARGE|ALL|:<DISPLAY_NUM> 
+        kill  SMALL|MEDIUM|LARGE|ALL|:<DISPLAY_NUM>
 
 
 FIN
@@ -33,7 +33,7 @@ start_vncserver() {
 
 
 start_small() {
-  start_vncserver $SMALL :1
+  start_vncserver $SMALL :3
 }
 
 start_medium() {
@@ -41,7 +41,7 @@ start_medium() {
 }
 
 start_large() {
-  start_vncserver $LARGE :3
+  start_vncserver $LARGE :1
 }
 
 start() {
@@ -64,6 +64,14 @@ start() {
     ;;
 
     ALL)
+      start_large
+      start_medium
+      start_small
+    ;;
+
+    :[0-9]*)
+      green "Starting server on display $1"
+      start_vncserver $LARGE $1
     ;;
 
     *)
@@ -74,9 +82,19 @@ start() {
 
 kill_vncserver() {
   local display=$1
-  local display_num=$(echo $display | cut -c2)
+  local display_num=$(echo $display | cut -c2-4)
   echo "Killing vncserver on display $display"
   vncserver -kill $display
+  ret=$?
+  if [ $ret -ne 0 ];then
+      pid=$(ps aux | grep vnc | grep :10 | awk '{print $2}')
+      if [ "X$pid" != "X" ];then
+          yellow "killing vnc on display $display"
+          kill -9 $pid
+      else
+          yellow "Couldn't find vnc process running on display $display"
+      fi
+  fi
   #remove old cruft
   #rm -f /tmp/.X3-lock
   #rm -f /tmp/.X11-unix/X3
@@ -86,7 +104,10 @@ kill_vncserver() {
   do
     if [ -f $cruft ];then
       echo "Removing old cruft $cruft"
-      #rm -f $cruft
+      rm -f $cruft
+    elif [ -S $cruft ];then
+      echo "Removing socket file $cruft"
+      rm -f $cruft
     fi
   done
 }
@@ -96,7 +117,7 @@ killit() {
 
   case $1 in
 
-    SMALL)
+    LARGE)
       kill_vncserver :1     
     ;;
 
@@ -104,7 +125,7 @@ killit() {
       kill_vncserver :2     
     ;;
 
-    LARGE)
+    SMALL)
       kill_vncserver :3     
     ;;
 
@@ -115,6 +136,9 @@ killit() {
       done
     ;;
 
+    :[0-9]*)
+        kill_vncserver $1
+    ;;
     *)
       usage "Invalid start argument <$1>.  Please provide a valid start argument"
     ;;
@@ -122,7 +146,7 @@ killit() {
 }
 
 show() {
-  ps auxwww | grep Xvnc | grep -v grep
+  ps auxwww | grep Xvnc4 | grep -v grep
 }
 
 if [ $# -lt 1 ];then

@@ -1,0 +1,33 @@
+RDPDOMAIN="${2:-}"
+RDPUSER="${RDPUSER:-administrator}"
+RDPPASSWD="${3:-svtrfs29LAB}"
+RDPHOST="$1"
+TITLE="$1"
+GEOMETRY="${GEOMETRY:-1024x768}"
+#SEC="${$SEC:--sec nla}"
+SEC="--no-nla"
+LINUX="false"
+
+
+if [ -f ~/.xrdp/$1 ];then
+  echo "sourcing config file ~/.xrdp/$1"
+  source ~/.xrdp/$1
+fi
+
+#ARGS="--plugin cliprdr -u $RDPUSER -p $RDPPASSWD --ignore-certificate $SEC -T $TITLE -g $GEOMETRY $RDPHOST" 
+if [ "X$LINUX" == "Xtrue" ];then
+  #ARGS="--plugin cliprdr  -u $RDPUSER --ignore-certificate $SEC -T $TITLE -g $GEOMETRY $RDPHOST " 
+  ARGS="--plugin cliprdr  -u $RDPUSER --ignore-certificate -T $TITLE -g $GEOMETRY $RDPHOST " 
+  echo "Connecting xrdp server"
+  echo "Choose vnc-any to connect to a specific display"
+else
+  echo "Connecting using a domain login"
+  ARGS="--plugin cliprdr -u $RDPUSER -p $RDPPASSWD --ignore-certificate $SEC -T $TITLE -g $GEOMETRY $RDPHOST" 
+  #ARGS="--plugin cliprdr -u $RDPUSER -p $RDPPASSWD --ignore-certificate -T $TITLE -g $GEOMETRY $RDPHOST" 
+  ARGS="$ARGS -p $RDPPASSWD -d $RDPDOMAIN"
+fi
+
+echo "Connecting to $1"
+set -x
+xfreerdp $ARGS &
+set +x

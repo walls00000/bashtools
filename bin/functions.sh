@@ -1,4 +1,5 @@
-export SVANET="10.149.20."
+#export SVANET="10.1.180."
+export SVANET="10.1.182."
 
 red() {
   echo "[031m$@[0m"
@@ -35,11 +36,11 @@ black() {
 ##########################
 ## xterm colors
 ##########################
-export LIME="rgb:87/ff/00"
-export TURQUOISE="rgb:87/ff/d7"
 export AMBER="rgb:ff/af/00"
 export DARK_GRAY="rgb:1c/1c/1c"
-export BLACK="rgb:00/00/00"
+export LIGHT_BROWN="rgb:87/5f/00"
+export LIGHT_BROWN2="rgb:af/5f/00"
+export DARK_BROWN="rgb:5f/00/00"
 
 xssh() {
   MY_TERM=xterm
@@ -57,18 +58,6 @@ term_ssh() {
   do
     echo "Connecting to ${host}"
     case ${host} in
-      hou-dvm18)
-        fg="$TURQUOISE"
-        bg="$BLACK"
-        #profile="PinkFg"
-        profile="Pro"
-        ;;
-      hou-*)
-        fg="$LIME"
-        bg="$DARK_GRAY"
-        #profile="PinkFg"
-        profile="Pro"
-        ;;
       dvm*)
         fg="$AMBER"
         bg="$DARK_GRAY"
@@ -99,12 +88,6 @@ term_ssh() {
         geometry="110x58"
         fg="white"
         bg="NavyBlue"
-        profile="BlueFg"
-        ;;
-      ubuntu)
-        geometry="110x58"
-        fg="white"
-        bg="rgb:5f/00/5f"
         profile="BlueFg"
         ;;
       *)
@@ -178,3 +161,7 @@ getSvaHosts() {
   export SVA_HOSTS
 }
 
+printSvaHosts() {
+  getSvaHosts $@
+  echo "SVA_HOSTS=${SVA_HOSTS}"
+}
