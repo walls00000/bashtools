@@ -41,6 +41,8 @@ export DARK_GRAY="rgb:1c/1c/1c"
 export LIGHT_BROWN="rgb:87/5f/00"
 export LIGHT_BROWN2="rgb:af/5f/00"
 export DARK_BROWN="rgb:5f/00/00"
+export LIGHT_BLUE="rgb:5f/d7/ff"
+export DARK_BLUE="rgb:5f/87/ff"
 
 xssh() {
   MY_TERM=xterm
@@ -58,31 +60,17 @@ term_ssh() {
   do
     echo "Connecting to ${host}"
     case ${host} in
+      hou-*)
+        fg="$LIGHT_BLUE"
+        bg="black"
+        #profile="PinkFg"
+        profile="Pro"
+        ;;
       dvm*)
         fg="$AMBER"
         bg="$DARK_GRAY"
         #profile="PinkFg"
         profile="Pro"
-        ;;
-      foreman-prod*)
-        fg="yellow" 
-        bg="rgb:80/00/00"
-        ;;
-      smartproxy-frco*)
-        fg="white" 
-        bg="rgb:af/00/00"
-        ;;
-      smartproxy-wb*)
-        fg="white" 
-        bg="rgb:80/00/00"
-        ;;
-      vyos)
-        fg="black" 
-        bg="gray"
-        ;;
-      *prod_alt)
-        fg="white"
-        bg="rgb:00/5f/87"
         ;;
       svtlab)
         geometry="110x58"
@@ -131,7 +119,7 @@ vssh() {
 xvim() {
   for i in $@
   do
-    xterm -rv -e vim $i &
+    xterm -fg white -bg black -e vim $i &
   done
 }
 
