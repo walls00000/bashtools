@@ -15,7 +15,7 @@ if ($ARGV[1] eq '') {
   $user = $ARGV[1];
 }
 
-my $default_password = "simplicity";
+my $default_password = "foobar";
 my $password;
 if ($ARGV[2] eq '') {
   $password = $default_password;
