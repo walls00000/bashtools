@@ -44,6 +44,13 @@ export DARK_BROWN="rgb:5f/00/00"
 export LIGHT_BLUE="rgb:5f/d7/ff"
 export DARK_BLUE="rgb:5f/87/ff"
 
+addToPath() {
+  for path in $@
+  do
+    echo $PATH | grep -q $path || export PATH=$path:${PATH}
+  done
+}
+
 xssh() {
   MY_TERM=xterm
   term_ssh $@
