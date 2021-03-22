@@ -1,5 +1,7 @@
 #export SVANET="10.1.180."
 export SVANET="10.1.182."
+export CIPHER_PY="$HOME/sandbox/python101/oo_python/cipher.py"
+export PYTHON="/usr/bin/python3"
 
 red() {
   echo "[031m$@[0m"
@@ -74,6 +76,12 @@ term_ssh() {
         profile="Pro"
         ;;
       dvm*)
+        fg="$AMBER"
+        bg="$DARK_GRAY"
+        #profile="PinkFg"
+        profile="Pro"
+        ;;
+      ubuntu*)
         fg="$AMBER"
         bg="$DARK_GRAY"
         #profile="PinkFg"
@@ -159,4 +167,17 @@ getSvaHosts() {
 printSvaHosts() {
   getSvaHosts $@
   echo "SVA_HOSTS=${SVA_HOSTS}"
+}
+
+
+getEncryptedUser() {
+  filename=$1
+  decrypted=`$PYTHON $CIPHER_PY -d -f $filename`
+  echo "$decrypted" | awk '{print $1}'
+}
+
+getEncryptedPass() {
+  filename=$1
+  decrypted=`$PYTHON $CIPHER_PY -d -f $filename`
+  echo "$decrypted" | awk '{print $2}'
 }

@@ -1,33 +1,81 @@
-RDPDOMAIN="${2:-}"
-RDPUSER="${RDPUSER:-administrator}"
-RDPPASSWD="${3:-svtrfs29LAB}"
-RDPHOST="$1"
-TITLE="$1"
-GEOMETRY="${GEOMETRY:-1024x768}"
-#SEC="${$SEC:--sec nla}"
-SEC="--no-nla"
-LINUX="false"
+source $HOME/sandbox/bashtools/bin/functions.sh
+validHostnames="\
+dvm \
+windvm \
+vagrant \
+coreftp \
+stesteng10 \
+alfresco72 \
+resttest \
+vengwin175"
+
+enc=$HOME/Documents/enc
+
+host=$1
+
+WINDOWS=false
+
+setCredentials() {
+    user=`getEncryptedUser $enc/${host}.enc`
+    pass=`getEncryptedPass $enc/${host}.enc`
+}
 
 
-if [ -f ~/.xrdp/$1 ];then
-  echo "sourcing config file ~/.xrdp/$1"
-  source ~/.xrdp/$1
+case $host in
+
+  dvm)
+    hostname=${host}
+    WINDOWS=false
+  ;;
+
+  windvm)
+    hostname=${host}
+    WINDOWS=true
+  ;;
+
+  vagrant)
+    hostname=${host}
+    WINDOWS=false
+  ;;
+
+  coreftp)
+    hostname=${host}.pipefitters.eng.pega.com
+    WINDOWS=true
+  ;;
+
+  stesteng10)
+    hostname=${host}.rpega.com
+    WINDOWS=true
+  ;;
+
+  alfresco72)
+    hostname=${host}.pipefitters.eng.pega.com
+    WINDOWS=true
+  ;;
+
+  resttest)
+    hostname=${host}.pipefitters.eng.pega.com
+    WINDOWS=true
+  ;;
+  vengwin175)
+    hostname=${host}.rpega.com
+    WINDOWS=true
+  ;;
+
+  *)
+    red "Unrecognized host '$host'"
+    echo "Valid hostnames are: "
+    yellow "$validHostnames"
+    exit 1
+  ;;
+
+esac
+
+setCredentials
+
+if [ "X$WINDOWS" == "Xtrue" ];then
+    user=$hostname\\$user
 fi
 
-#ARGS="--plugin cliprdr -u $RDPUSER -p $RDPPASSWD --ignore-certificate $SEC -T $TITLE -g $GEOMETRY $RDPHOST" 
-if [ "X$LINUX" == "Xtrue" ];then
-  #ARGS="--plugin cliprdr  -u $RDPUSER --ignore-certificate $SEC -T $TITLE -g $GEOMETRY $RDPHOST " 
-  ARGS="--plugin cliprdr  -u $RDPUSER --ignore-certificate -T $TITLE -g $GEOMETRY $RDPHOST " 
-  echo "Connecting xrdp server"
-  echo "Choose vnc-any to connect to a specific display"
-else
-  echo "Connecting using a domain login"
-  ARGS="--plugin cliprdr -u $RDPUSER -p $RDPPASSWD --ignore-certificate $SEC -T $TITLE -g $GEOMETRY $RDPHOST" 
-  #ARGS="--plugin cliprdr -u $RDPUSER -p $RDPPASSWD --ignore-certificate -T $TITLE -g $GEOMETRY $RDPHOST" 
-  ARGS="$ARGS -p $RDPPASSWD -d $RDPDOMAIN"
-fi
+xfreerdp /cert:ignore /size:1280x800 /u:$user /p:$pass /drive:wallw,/Users/wallw /v:$hostname &
 
-echo "Connecting to $1"
-set -x
-xfreerdp $ARGS &
-set +x
