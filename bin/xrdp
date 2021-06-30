@@ -1,5 +1,6 @@
 source $HOME/sandbox/bashtools/bin/functions.sh
 validHostnames="\
+vagrant \
 dvm \
 windvm \
 vagrant \
@@ -14,6 +15,10 @@ enc=$HOME/Documents/enc
 host=$1
 
 WINDOWS=false
+SMALL_RESOLUTION=1280x800
+LARGE_RESOLUTION=1800x1060
+XTRA_LARGE_RESOLUTION=3600x1060
+RESOLUTION=$LARGE_RESOLUTION
 
 setCredentials() {
     user=`getEncryptedUser $enc/${host}.enc`
@@ -22,6 +27,11 @@ setCredentials() {
 
 
 case $host in
+
+  vagrant)
+    hostname=localhost
+    WINDOWS=false
+  ;;
 
   dvm)
     hostname=${host}
@@ -77,5 +87,5 @@ if [ "X$WINDOWS" == "Xtrue" ];then
     user=$hostname\\$user
 fi
 
-xfreerdp /cert:ignore /size:1280x800 /u:$user /p:$pass /drive:wallw,/Users/wallw /v:$hostname &
+xfreerdp /cert:ignore /size:$RESOLUTION /u:$user /p:$pass /drive:wallw,/Users/wallw /v:$hostname &
 

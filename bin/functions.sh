@@ -107,7 +107,7 @@ term_ssh() {
   done
 }
 
-vssh() {
+vsshf() {
   for host in $@
   do
     echo "Connecting to ${host}"
