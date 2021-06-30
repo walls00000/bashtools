@@ -1,0 +1,10 @@
+POD=$1
+if [ "X$POD" == "X" ]; then
+  echo "Please provide a pod name"
+  exit 1
+fi
+
+NAMESPACE=${NAMESPACE:-integration-gateway-staging}
+set -x
+kubectl logs -n $NAMESPACE $POD --follow | sed 's/\\n/\n/g' | sed 's/\\t/\t/g' | sed 's/\\//g'
+set +x
